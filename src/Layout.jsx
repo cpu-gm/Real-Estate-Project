@@ -11,7 +11,9 @@ import {
   FileDown, 
   Settings,
   ChevronRight,
-  AlertTriangle
+  AlertTriangle,
+  Menu,
+  X
 } from 'lucide-react';
 import { cn } from "@/lib/utils";
 
@@ -22,6 +24,7 @@ export const useRole = () => useContext(RoleContext);
 export default function Layout({ children, currentPageName }) {
   const [currentRole, setCurrentRole] = useState('GP');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const navigation = [
     { name: 'Deals', href: 'Deals', icon: LayoutDashboard },
@@ -53,13 +56,23 @@ export default function Layout({ children, currentPageName }) {
       `}</style>
       
       <div className="min-h-screen bg-[#FAFAFA] flex">
+        {/* Mobile Overlay */}
+        {mobileMenuOpen && (
+          <div 
+            className="fixed inset-0 bg-black/20 z-40 lg:hidden"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+        )}
+
         {/* Sidebar */}
         <aside className={cn(
           "fixed left-0 top-0 h-full bg-white border-r border-[#E5E5E5] flex flex-col transition-all duration-300 z-50",
-          sidebarCollapsed ? "w-16" : "w-64"
+          sidebarCollapsed ? "w-16" : "w-64",
+          "lg:translate-x-0",
+          mobileMenuOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}>
           {/* Logo */}
-          <div className="h-16 flex items-center px-5 border-b border-[#E5E5E5]">
+          <div className="h-16 flex items-center px-5 border-b border-[#E5E5E5] justify-between">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-[#0A0A0A] rounded-lg flex items-center justify-center">
                 <span className="text-white font-semibold text-sm">C</span>
@@ -71,6 +84,12 @@ export default function Layout({ children, currentPageName }) {
                 </div>
               )}
             </div>
+            <button
+              onClick={() => setMobileMenuOpen(false)}
+              className="lg:hidden p-2 hover:bg-[#F5F5F5] rounded-lg"
+            >
+              <X className="w-5 h-5 text-[#171717]" />
+            </button>
           </div>
 
           {/* Navigation */}
@@ -81,6 +100,7 @@ export default function Layout({ children, currentPageName }) {
                 <Link
                   key={item.name}
                   to={createPageUrl(item.href)}
+                  onClick={() => setMobileMenuOpen(false)}
                   className={cn(
                     "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
                     isActive 
@@ -125,9 +145,26 @@ export default function Layout({ children, currentPageName }) {
         {/* Main Content */}
         <main className={cn(
           "flex-1 transition-all duration-300",
-          sidebarCollapsed ? "ml-16" : "ml-64"
+          "lg:ml-64",
+          sidebarCollapsed ? "lg:ml-16" : "lg:ml-64"
         )}>
-          <div className="min-h-screen">
+          {/* Mobile Header */}
+          <div className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-white border-b border-[#E5E5E5] flex items-center px-4 z-30">
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className="p-2 hover:bg-[#F5F5F5] rounded-lg"
+            >
+              <Menu className="w-5 h-5 text-[#171717]" />
+            </button>
+            <div className="ml-3 flex items-center gap-2">
+              <div className="w-6 h-6 bg-[#0A0A0A] rounded-md flex items-center justify-center">
+                <span className="text-white font-semibold text-xs">C</span>
+              </div>
+              <span className="font-semibold text-[#171717] text-sm">Canonical</span>
+            </div>
+          </div>
+
+          <div className="min-h-screen pt-16 lg:pt-0">
             {children}
           </div>
         </main>

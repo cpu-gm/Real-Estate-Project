@@ -1,25 +1,25 @@
-import Deals from './pages/Deals';
+import AuditExport from './pages/AuditExport';
+import Compliance from './pages/Compliance';
 import CreateDeal from './pages/CreateDeal';
 import DealOverview from './pages/DealOverview';
-import Lifecycle from './pages/Lifecycle';
-import Traceability from './pages/Traceability';
+import Deals from './pages/Deals';
 import Explain from './pages/Explain';
-import Compliance from './pages/Compliance';
-import AuditExport from './pages/AuditExport';
+import Lifecycle from './pages/Lifecycle';
 import Settings from './pages/Settings';
+import Traceability from './pages/Traceability';
 import __Layout from './Layout.jsx';
 
 
 export const PAGES = {
-    "Deals": Deals,
+    "AuditExport": AuditExport,
+    "Compliance": Compliance,
     "CreateDeal": CreateDeal,
     "DealOverview": DealOverview,
-    "Lifecycle": Lifecycle,
-    "Traceability": Traceability,
+    "Deals": Deals,
     "Explain": Explain,
-    "Compliance": Compliance,
-    "AuditExport": AuditExport,
+    "Lifecycle": Lifecycle,
     "Settings": Settings,
+    "Traceability": Traceability,
 }
 
 export const pagesConfig = {
