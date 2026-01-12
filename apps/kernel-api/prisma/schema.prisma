@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ActorType {
+  HUMAN
+  SYSTEM
+}
+
+enum TruthClass {
+  DOC
+  HUMAN
+  AI
+}
+
+model Deal {
+  id              String           @id @default(uuid()) @db.Uuid
+  name            String
+  state           String
+  stressMode      String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  actorRoles      ActorRole[]
+  authorityRules  AuthorityRule[]
+  materialObjects MaterialObject[]
+  events          Event[]
+}
+
+model Actor {
+  id         String      @id @default(uuid()) @db.Uuid
+  name       String
+  type       ActorType
+  createdAt  DateTime    @default(now())
+  actorRoles ActorRole[]
+  events     Event[]
+}
+
+model Role {
+  id         String      @id @default(uuid()) @db.Uuid
+  name       String
+  orgId      String?
+  createdAt  DateTime    @default(now())
+  actorRoles ActorRole[]
+}
+
+model ActorRole {
+  actorId   String   @db.Uuid
+  roleId    String   @db.Uuid
+  dealId    String?  @db.Uuid
+  createdAt DateTime @default(now())
+
+  actor Actor @relation(fields: [actorId], references: [id])
+  role  Role  @relation(fields: [roleId], references: [id])
+  deal  Deal? @relation(fields: [dealId], references: [id])
+
+  @@id([actorId, roleId, createdAt])
+}
+
+model AuthorityRule {
+  id            String   @id @default(uuid()) @db.Uuid
+  dealId        String   @db.Uuid
+  action        String
+  threshold     Int
+  rolesAllowed  String[]
+  rolesRequired String[]
+  createdAt     DateTime @default(now())
+
+  deal Deal @relation(fields: [dealId], references: [id])
+}
+
+model MaterialObject {
+  id         String     @id @default(uuid()) @db.Uuid
+  dealId     String     @db.Uuid
+  type       String
+  data       Json
+  truthClass TruthClass
+  asOf       DateTime?
+  sourceRef  String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  deal Deal @relation(fields: [dealId], references: [id])
+}
+
+model Event {
+  id               String   @id @default(uuid()) @db.Uuid
+  dealId           String   @db.Uuid
+  type             String
+  payload          Json
+  actorId          String?  @db.Uuid
+  authorityContext Json
+  evidenceRefs     String[]
+  createdAt        DateTime @default(now())
+
+  deal  Deal   @relation(fields: [dealId], references: [id])
+  actor Actor? @relation(fields: [actorId], references: [id])
+}
