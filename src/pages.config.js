@@ -4,6 +4,7 @@ import DealOverview from './pages/DealOverview';
 import Lifecycle from './pages/Lifecycle';
 import Traceability from './pages/Traceability';
 import Explain from './pages/Explain';
+import Compliance from './pages/Compliance';
 import __Layout from './Layout.jsx';
 
 
@@ -14,6 +15,7 @@ export const PAGES = {
     "Lifecycle": Lifecycle,
     "Traceability": Traceability,
     "Explain": Explain,
+    "Compliance": Compliance,
 }
 
 export const pagesConfig = {
