@@ -47,20 +47,11 @@ describe("Deal lifecycle projection", () => {
     const actorResponse = await app.inject({
       method: "POST",
       url: `/deals/${dealId}/actors`,
-      payload: { name: `${role} Actor`, type: "HUMAN" }
+      payload: { name: `${role} Actor`, type: "HUMAN", role }
     });
 
     expect(actorResponse.statusCode).toBe(201);
-    const actorId = actorResponse.json().id as string;
-
-    const roleResponse = await app.inject({
-      method: "POST",
-      url: `/deals/${dealId}/actors/${actorId}/roles`,
-      payload: { role }
-    });
-
-    expect(roleResponse.statusCode).toBe(200);
-    return actorId;
+    return actorResponse.json().id as string;
   };
 
   const appendEvent = async (
@@ -131,7 +122,10 @@ describe("Deal lifecycle projection", () => {
 
   beforeEach(async () => {
     await prisma.event.deleteMany();
+    await prisma.materialRevision.deleteMany();
     await prisma.materialObject.deleteMany();
+    await prisma.artifactLink.deleteMany();
+    await prisma.artifact.deleteMany();
     await prisma.authorityRule.deleteMany();
     await prisma.actorRole.deleteMany();
     await prisma.role.deleteMany();
@@ -312,3 +306,4 @@ describe("Deal lifecycle projection", () => {
     expect(response.statusCode).toBe(404);
   });
 });
+
