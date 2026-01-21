@@ -5,6 +5,7 @@ import { z, ZodError } from "zod";
 import { AllowedEventTypes, DealStates, StressModes } from "@kernel/shared";
 import { createPrismaClient } from "./prisma";
 import { projectDealLifecycle } from "./projection";
+import { createAuditEvent } from "./audit";
 import archiver from "archiver";
 import PDFDocument from "pdfkit";
 import { createHash, randomUUID } from "node:crypto";
@@ -113,6 +114,14 @@ const artifactLinkSchema = z
     message: "At least one link field is required"
   });
 
+const simulateEventSchema = z.object({
+  type: z.string().trim().min(1, "type is required").max(100, "type is too long"),
+  actorId: z.string().uuid("actorId must be a valid UUID").optional(),
+  payload: z.record(z.unknown()).optional().default({}),
+  authorityContext: z.record(z.unknown()).optional().default({}),
+  evidenceRefs: z.array(z.string()).optional().default([])
+});
+
 const allowedEventTypeSet = new Set(AllowedEventTypes);
 
 const gateEventTypes = new Set([
@@ -179,6 +188,10 @@ type ExplainReason = {
   requiredTruth?: RequiredTruth;
   currentTruth?: TruthClass | null;
   satisfiedByOverride?: boolean;
+  threshold?: number;
+  rolesAllowed?: string[];
+  currentCount?: number;
+  satisfiedByRole?: Record<string, number>;
 };
 
 type ExplainBlock = {
@@ -1070,44 +1083,62 @@ async function computeExplainData(
     }
   }
 
+  // Check for override once - applies to both approval and material requirements
+  const overrideUsed = await findValidOverrideAt(
+    prisma,
+    dealId,
+    body.action,
+    at
+  );
+  console.log(`[explain] overrideUsed=${overrideUsed} for action=${body.action}`);
+
+  // Check approval threshold (bypassed by override)
   if (gateActions.has(body.action)) {
     const approvalForAction = approvalSummary[body.action];
     if (!approvalForAction || !approvalForAction.satisfied) {
-      reasons.push({
-        type: "APPROVAL_THRESHOLD",
-        message: "Approval threshold not met."
-      });
+      if (!overrideUsed) {
+        // Find the approval rule for this action to get threshold and roles
+        const approvalRule = rules.find((r) => r.action === body.action);
+        const threshold = approvalRule?.threshold ?? approvalForAction?.threshold ?? 0;
+        const rolesAllowed = approvalRule?.rolesAllowed ?? [];
+        const currentCount = approvalForAction?.satisfiedByRole
+          ? Object.values(approvalForAction.satisfiedByRole).reduce((sum, count) => sum + count, 0)
+          : 0;
+
+        const rolesList = rolesAllowed.length > 0 ? ` from ${rolesAllowed.join(', ')}` : '';
+        reasons.push({
+          type: "APPROVAL_THRESHOLD",
+          message: `Approval threshold not met. Required: ${threshold} approval${threshold !== 1 ? 's' : ''}${rolesList}. Current: ${currentCount}.`,
+          threshold,
+          rolesAllowed,
+          currentCount,
+          satisfiedByRole: approvalForAction?.satisfiedByRole ?? {}
+        });
+      }
     }
   }
 
+  // Check material requirements (bypassed by override)
   const requirements = materialRequirementsByAction[body.action] ?? [];
   const requirementStatus = buildMaterialRequirementStatus(materials, requirements);
-  if (requirements.length > 0) {
-    const overrideUsed = await findValidOverrideAt(
-      prisma,
-      dealId,
-      body.action,
-      at
-    );
-    if (!overrideUsed) {
-      for (const status of requirementStatus) {
-        if (status.status === "MISSING") {
-          reasons.push({
-            type: "MISSING_MATERIAL",
-            message: `Missing material ${status.type}.`,
-            materialType: status.type,
-            requiredTruth: status.requiredTruth,
-            currentTruth: null
-          });
-        } else if (status.status === "INSUFFICIENT") {
-          reasons.push({
-            type: "INSUFFICIENT_TRUTH",
-            message: `Material ${status.type} does not meet truth requirement.`,
-            materialType: status.type,
-            requiredTruth: status.requiredTruth,
-            currentTruth: status.currentTruth
-          });
-        }
+  if (requirements.length > 0 && !overrideUsed) {
+    for (const status of requirementStatus) {
+      if (status.status === "MISSING") {
+        reasons.push({
+          type: "MISSING_MATERIAL",
+          message: `Missing material ${status.type}.`,
+          materialType: status.type,
+          requiredTruth: status.requiredTruth,
+          currentTruth: null
+        });
+      } else if (status.status === "INSUFFICIENT") {
+        reasons.push({
+          type: "INSUFFICIENT_TRUTH",
+          message: `Material ${status.type} does not meet truth requirement.`,
+          materialType: status.type,
+          requiredTruth: status.requiredTruth,
+          currentTruth: status.currentTruth
+        });
       }
     }
   }
@@ -1148,8 +1179,12 @@ async function findValidOverrideAt(
   action: string,
   at: Date
 ): Promise<boolean> {
+  console.log(`[findValidOverrideAt] Checking override for action=${action}, dealId=${dealId}`);
+
   const gateEventType = materialGateActions.get(action);
+  console.log(`[findValidOverrideAt] gateEventType=${gateEventType}`);
   if (!gateEventType) {
+    console.log(`[findValidOverrideAt] No gateEventType found, returning false`);
     return false;
   }
 
@@ -1161,13 +1196,16 @@ async function findValidOverrideAt(
     },
     select: { payload: true, createdAt: true }
   });
+  console.log(`[findValidOverrideAt] Found ${overrides.length} OverrideAttested events`);
 
   let latestOverride: Date | null = null;
   for (const override of overrides) {
     const payload = normalizeMaterialData(override.payload);
     const target = resolveOverrideTarget(payload);
     const reason = resolveOverrideReason(payload);
+    console.log(`[findValidOverrideAt] Override: target=${target}, reason=${reason}, action=${action}`);
     if (target !== action || !reason) {
+      console.log(`[findValidOverrideAt] Skipping - target mismatch or no reason`);
       continue;
     }
     if (!latestOverride || override.createdAt > latestOverride) {
@@ -1176,8 +1214,10 @@ async function findValidOverrideAt(
   }
 
   if (!latestOverride) {
+    console.log(`[findValidOverrideAt] No valid override found, returning false`);
     return false;
   }
+  console.log(`[findValidOverrideAt] Latest override at ${latestOverride}`);
 
   const lastGateEvent = await prisma.event.findFirst({
     where: {
@@ -1190,10 +1230,13 @@ async function findValidOverrideAt(
   });
 
   if (!lastGateEvent) {
+    console.log(`[findValidOverrideAt] No gate event found, override is valid, returning true`);
     return true;
   }
 
-  return latestOverride > lastGateEvent.createdAt;
+  const result = latestOverride > lastGateEvent.createdAt;
+  console.log(`[findValidOverrideAt] Gate event at ${lastGateEvent.createdAt}, override valid=${result}`);
+  return result;
 }
 
 function formatZodError(error: ZodError): string {
@@ -1396,6 +1439,13 @@ export function buildServer(): FastifyInstance {
       return createdDeal;
     });
 
+    // Record audit event for deal creation
+    await createAuditEvent(prisma, deal.id, 'DealCreated', {
+      name: deal.name,
+      state: deal.state,
+      stressMode: deal.stressMode
+    }, null, {}, []);
+
     return reply.code(201).send(deal);
   });
 
@@ -1450,6 +1500,14 @@ export function buildServer(): FastifyInstance {
 
       return createdActor;
     });
+
+    // Record audit event for actor creation
+    await createAuditEvent(prisma, paramsResult.data.dealId, 'ActorAdded', {
+      actorId: actor.id,
+      name: actor.name,
+      type: actor.type,
+      role: roleName
+    }, null, {}, []);
 
     return reply.code(201).send({
       id: actor.id,
@@ -1606,6 +1664,13 @@ export function buildServer(): FastifyInstance {
       }
     });
 
+    // Record audit event for role assignment
+    await createAuditEvent(prisma, paramsResult.data.dealId, 'RoleAssigned', {
+      actorId: paramsResult.data.actorId,
+      roleId: role.id,
+      roleName: role.name
+    }, paramsResult.data.actorId, {}, []);
+
     return reply.code(200).send({ ok: true });
   });
 
@@ -1697,59 +1762,70 @@ export function buildServer(): FastifyInstance {
     }
 
     if (gateEventTypes.has(bodyResult.data.type)) {
-      const approvals = await prisma.event.findMany({
-        where: {
-          dealId: paramsResult.data.dealId,
-          type: "ApprovalGranted",
-          payload: {
-            path: ["action"],
-            equals: action
-          }
-        },
-        select: { actorId: true }
-      });
-
-      const approvalActorIds = approvals
-        .map((approval) => approval.actorId)
-        .filter((actorId): actorId is string => typeof actorId === "string");
-
-      if (approvalActorIds.length < rule.threshold) {
-        const explainBlock = await buildExplainBlock(prisma, deal.id, action, [
-          {
-            type: "APPROVAL_THRESHOLD",
-            message: "Approval threshold not met."
-          }
-        ]);
-        return reply.code(409).send(explainBlock);
-      }
-
-      const approvalRoles = await prisma.actorRole.findMany({
-        where: {
-          dealId: paramsResult.data.dealId,
-          actorId: { in: approvalActorIds }
-        },
-        include: { role: true }
-      });
-
-      const allowedActorIds = new Set(
-        approvalRoles
-          .filter((actorRole) => rule.rolesAllowed.includes(actorRole.role.name))
-          .map((actorRole) => actorRole.actorId)
+      // Check for override first - if override exists, skip approval threshold check
+      const overrideForGate = await findValidOverride(
+        prisma,
+        deal.id,
+        action,
+        bodyResult.data.type
       );
+      console.log(`[createEvent] Gate event ${bodyResult.data.type}, overrideForGate=${overrideForGate}`);
 
-      const allowedApprovalCount = approvals.filter(
-        (approval) =>
-          approval.actorId !== null && allowedActorIds.has(approval.actorId)
-      ).length;
+      if (!overrideForGate) {
+        const approvals = await prisma.event.findMany({
+          where: {
+            dealId: paramsResult.data.dealId,
+            type: "ApprovalGranted",
+            payload: {
+              path: ["action"],
+              equals: action
+            }
+          },
+          select: { actorId: true }
+        });
 
-      if (allowedApprovalCount < rule.threshold) {
-        const explainBlock = await buildExplainBlock(prisma, deal.id, action, [
-          {
-            type: "APPROVAL_THRESHOLD",
-            message: "Approval threshold not met."
-          }
-        ]);
-        return reply.code(409).send(explainBlock);
+        const approvalActorIds = approvals
+          .map((approval) => approval.actorId)
+          .filter((actorId): actorId is string => typeof actorId === "string");
+
+        if (approvalActorIds.length < rule.threshold) {
+          const explainBlock = await buildExplainBlock(prisma, deal.id, action, [
+            {
+              type: "APPROVAL_THRESHOLD",
+              message: "Approval threshold not met."
+            }
+          ]);
+          return reply.code(409).send(explainBlock);
+        }
+
+        const approvalRoles = await prisma.actorRole.findMany({
+          where: {
+            dealId: paramsResult.data.dealId,
+            actorId: { in: approvalActorIds }
+          },
+          include: { role: true }
+        });
+
+        const allowedActorIds = new Set(
+          approvalRoles
+            .filter((actorRole) => rule.rolesAllowed.includes(actorRole.role.name))
+            .map((actorRole) => actorRole.actorId)
+        );
+
+        const allowedApprovalCount = approvals.filter(
+          (approval) =>
+            approval.actorId !== null && allowedActorIds.has(approval.actorId)
+        ).length;
+
+        if (allowedApprovalCount < rule.threshold) {
+          const explainBlock = await buildExplainBlock(prisma, deal.id, action, [
+            {
+              type: "APPROVAL_THRESHOLD",
+              message: "Approval threshold not met."
+            }
+          ]);
+          return reply.code(409).send(explainBlock);
+        }
       }
     }
 
@@ -1873,6 +1949,27 @@ export function buildServer(): FastifyInstance {
     return reply.code(200).send(events);
   });
 
+  // Verify event chain integrity for a deal
+  app.get("/deals/:dealId/events/verify", async (request, reply) => {
+    const paramsResult = dealParamsSchema.safeParse(request.params);
+    if (!paramsResult.success) {
+      return reply.code(400).send({ message: formatZodError(paramsResult.error) });
+    }
+
+    const deal = await prisma.deal.findUnique({
+      where: { id: paramsResult.data.dealId },
+      select: { id: true }
+    });
+    if (!deal) {
+      return reply.code(404).send({ message: "Deal not found" });
+    }
+
+    const { verifyEventChain } = await import("./audit");
+    const result = await verifyEventChain(prisma, paramsResult.data.dealId);
+
+    return reply.code(200).send(result);
+  });
+
   app.get("/deals/:dealId/snapshot", async (request, reply) => {
     const paramsResult = dealParamsSchema.safeParse(request.params);
     if (!paramsResult.success) {
@@ -1946,6 +2043,78 @@ export function buildServer(): FastifyInstance {
     }
   });
 
+  // Field to Material Type Mapping - for BFF provenance sync
+  // Maps deal fields (e.g., profile.purchase_price) to kernel material types
+  // Enables multi-tenant and multi-asset-type support for Phase 2
+  app.get("/deals/:dealId/schema/field-material-map", async (request, reply) => {
+    const paramsResult = dealParamsSchema.safeParse(request.params);
+    if (!paramsResult.success) {
+      return reply.code(400).send({ message: formatZodError(paramsResult.error) });
+    }
+
+    const querySchema = z.object({
+      fieldPath: z.string().optional()
+    });
+    const queryResult = querySchema.safeParse(request.query ?? {});
+    if (!queryResult.success) {
+      return reply.code(400).send({ message: formatZodError(queryResult.error) });
+    }
+
+    const deal = await prisma.deal.findUnique({
+      where: { id: paramsResult.data.dealId },
+      select: { id: true, profile: true }
+    });
+    if (!deal) {
+      return reply.code(404).send({ message: "Deal not found" });
+    }
+
+    // Standard field-to-material mappings (Phase 1: single deal type)
+    // In Phase 2, this will be parameterized by deal asset type
+    const fieldMappings: Record<string, string> = {
+      // Underwriting Summary fields (required for APPROVE_DEAL)
+      "profile.purchase_price": "UnderwritingSummary",
+      "profile.noi": "UnderwritingSummary",
+      "profile.cap_rate": "UnderwritingSummary",
+      "profile.asset_type": "UnderwritingSummary",
+      "profile.square_footage": "UnderwritingSummary",
+      "profile.unit_count": "UnderwritingSummary",
+      "profile.year_built": "UnderwritingSummary",
+      "profile.asset_address": "UnderwritingSummary",
+      "profile.asset_city": "UnderwritingSummary",
+      "profile.asset_state": "UnderwritingSummary",
+      
+      // Final Underwriting fields (required for ATTEST_READY_TO_CLOSE)
+      "profile.ltv": "FinalUnderwriting",
+      "profile.dscr": "FinalUnderwriting",
+      "profile.senior_debt": "FinalUnderwriting",
+      "profile.mezzanine_debt": "FinalUnderwriting",
+      "profile.preferred_equity": "FinalUnderwriting",
+      "profile.common_equity": "FinalUnderwriting",
+      
+      // Party information
+      "profile.gp_name": "GeneralPartnerInfo",
+      "profile.lender_name": "LenderInfo",
+      
+      // Summary
+      "profile.deal_summary": "DealSummary"
+    };
+
+    const fieldPath = queryResult.data.fieldPath;
+    
+    // If specific field requested, return its mapping
+    if (fieldPath) {
+      const materialType = fieldMappings[fieldPath] ?? null;
+      return reply.code(200).send({
+        fieldPath,
+        materialType,
+        mapping: fieldMappings
+      });
+    }
+
+    // Otherwise return full mapping
+    return reply.code(200).send({ mapping: fieldMappings });
+  });
+
   app.get("/deals/:dealId/materials", async (request, reply) => {
     const paramsResult = dealParamsSchema.safeParse(request.params);
     if (!paramsResult.success) {
@@ -2013,6 +2182,13 @@ export function buildServer(): FastifyInstance {
       return created;
     });
 
+    // Record audit event for material creation
+    await createAuditEvent(prisma, paramsResult.data.dealId, 'MaterialCreated', {
+      materialId: material.id,
+      type: material.type,
+      truthClass: material.truthClass
+    }, null, {}, bodyResult.data.evidenceRefs || []);
+
     return reply.code(201).send(material);
   });
 
@@ -2077,8 +2253,459 @@ export function buildServer(): FastifyInstance {
       return updatedMaterial;
     });
 
+    // Record audit event for material update
+    await createAuditEvent(prisma, paramsResult.data.dealId, 'MaterialUpdated', {
+      materialId: updated.id,
+      type: updated.type,
+      previousTruthClass: material.truthClass,
+      newTruthClass: updated.truthClass
+    }, null, {}, bodyResult.data.evidenceRefs || []);
+
     return reply.code(200).send(updated);
   });
+
+  // ========== DRAFT MODE ENDPOINTS ==========
+
+  // Start draft mode for a deal
+  app.post("/deals/:dealId/draft/start", async (request, reply) => {
+    const paramsResult = dealParamsSchema.safeParse(request.params);
+    if (!paramsResult.success) {
+      return reply.code(400).send({ message: formatZodError(paramsResult.error) });
+    }
+
+    const deal = await prisma.deal.findUnique({
+      where: { id: paramsResult.data.dealId },
+      select: { id: true, state: true, stressMode: true }
+    });
+    if (!deal) {
+      return reply.code(404).send({ message: "Deal not found" });
+    }
+
+    // Check if draft state already exists
+    let draftState = await prisma.draftState.findUnique({
+      where: { dealId: paramsResult.data.dealId }
+    });
+
+    if (!draftState) {
+      draftState = await prisma.draftState.create({
+        data: { dealId: paramsResult.data.dealId }
+      });
+    }
+
+    return reply.code(200).send({
+      draftId: draftState.id,
+      dealId: deal.id,
+      status: "DRAFT",
+      currentState: {
+        state: deal.state,
+        stressMode: deal.stressMode
+      }
+    });
+  });
+
+  // Simulate an event without persisting to main event log
+  app.post("/deals/:dealId/draft/simulate-event", async (request, reply) => {
+    const paramsResult = dealParamsSchema.safeParse(request.params);
+    if (!paramsResult.success) {
+      return reply.code(400).send({ message: formatZodError(paramsResult.error) });
+    }
+
+    const bodyResult = simulateEventSchema.safeParse(request.body ?? {});
+    if (!bodyResult.success) {
+      return reply.code(400).send({ message: formatZodError(bodyResult.error) });
+    }
+
+    const deal = await prisma.deal.findUnique({
+      where: { id: paramsResult.data.dealId },
+      select: { id: true }
+    });
+    if (!deal) {
+      return reply.code(404).send({ message: "Deal not found" });
+    }
+
+    // Get or create draft state
+    let draftState = await prisma.draftState.findUnique({
+      where: { dealId: paramsResult.data.dealId },
+      include: { simulatedEvents: { orderBy: { sequenceOrder: "asc" } } }
+    });
+
+    if (!draftState) {
+      draftState = await prisma.draftState.create({
+        data: { dealId: paramsResult.data.dealId },
+        include: { simulatedEvents: { orderBy: { sequenceOrder: "asc" } } }
+      });
+    }
+
+    // Get committed events
+    const committedEvents = await prisma.event.findMany({
+      where: { dealId: paramsResult.data.dealId },
+      select: { id: true, type: true, createdAt: true },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+    });
+
+    // Create new simulated event
+    const nextSequence = draftState.simulatedEvents.length;
+    const newSimulatedEvent = await prisma.simulatedEvent.create({
+      data: {
+        draftStateId: draftState.id,
+        type: bodyResult.data.type,
+        actorId: bodyResult.data.actorId ?? null,
+        payload: bodyResult.data.payload,
+        authorityContext: bodyResult.data.authorityContext,
+        evidenceRefs: bodyResult.data.evidenceRefs,
+        sequenceOrder: nextSequence
+      }
+    });
+
+    // Project state with committed + simulated events
+    const allEvents = [
+      ...committedEvents,
+      ...draftState.simulatedEvents.map((e) => ({
+        id: e.id,
+        type: e.type,
+        createdAt: e.createdAt
+      })),
+      {
+        id: newSimulatedEvent.id,
+        type: newSimulatedEvent.type,
+        createdAt: newSimulatedEvent.createdAt
+      }
+    ];
+
+    const projection = projectDealLifecycle({
+      initialDeal: { state: DealStates.Draft, stressMode: StressModes.SM0 },
+      events: allEvents
+    });
+
+    // Evaluate gates for common actions
+    const actionsToCheck = [
+      "APPROVE_DEAL",
+      "ATTEST_READY_TO_CLOSE",
+      "FINALIZE_CLOSING",
+      "ACTIVATE_OPERATIONS"
+    ];
+
+    const gatesAffected = [];
+    for (const action of actionsToCheck) {
+      try {
+        const explainResult = await computeExplainData(
+          prisma,
+          paramsResult.data.dealId,
+          new Date(),
+          {
+            action,
+            actorId: bodyResult.data.actorId ?? null,
+            payload: {},
+            authorityContext: {},
+            evidenceRefs: []
+          }
+        );
+        gatesAffected.push({
+          action,
+          isBlocked: explainResult.status === "BLOCKED",
+          status: explainResult.status,
+          reasons: explainResult.reasons ?? [],
+          nextSteps: explainResult.nextSteps ?? []
+        });
+      } catch (error) {
+        // Skip actions that error (e.g., unknown actions)
+      }
+    }
+
+    // Store gate previews
+    await prisma.projectionGate.deleteMany({
+      where: { draftStateId: draftState.id }
+    });
+
+    for (const gate of gatesAffected) {
+      await prisma.projectionGate.create({
+        data: {
+          draftStateId: draftState.id,
+          action: gate.action,
+          isBlocked: gate.isBlocked,
+          reasons: gate.reasons,
+          nextSteps: gate.nextSteps
+        }
+      });
+    }
+
+    return reply.code(200).send({
+      simulatedEventId: newSimulatedEvent.id,
+      sequenceOrder: nextSequence,
+      projectionAfter: projection,
+      gatesAffected
+    });
+  });
+
+  // Preview all gates at current draft state
+  app.get("/deals/:dealId/draft/gates", async (request, reply) => {
+    const paramsResult = dealParamsSchema.safeParse(request.params);
+    if (!paramsResult.success) {
+      return reply.code(400).send({ message: formatZodError(paramsResult.error) });
+    }
+
+    const deal = await prisma.deal.findUnique({
+      where: { id: paramsResult.data.dealId },
+      select: { id: true, state: true, stressMode: true }
+    });
+    if (!deal) {
+      return reply.code(404).send({ message: "Deal not found" });
+    }
+
+    const draftState = await prisma.draftState.findUnique({
+      where: { dealId: paramsResult.data.dealId },
+      include: {
+        simulatedEvents: { orderBy: { sequenceOrder: "asc" } },
+        gatesPreviewed: true
+      }
+    });
+
+    if (!draftState) {
+      return reply.code(404).send({ message: "Draft state not found" });
+    }
+
+    // Get committed events
+    const committedEvents = await prisma.event.findMany({
+      where: { dealId: paramsResult.data.dealId },
+      select: { id: true, type: true, createdAt: true },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+    });
+
+    // Project current state
+    const allEvents = [
+      ...committedEvents,
+      ...draftState.simulatedEvents.map((e) => ({
+        id: e.id,
+        type: e.type,
+        createdAt: e.createdAt
+      }))
+    ];
+
+    const projection = projectDealLifecycle({
+      initialDeal: { state: DealStates.Draft, stressMode: StressModes.SM0 },
+      events: allEvents
+    });
+
+    return reply.code(200).send({
+      currentProjection: projection,
+      gates: draftState.gatesPreviewed.map((gate) => ({
+        action: gate.action,
+        isBlocked: gate.isBlocked,
+        reasons: gate.reasons,
+        nextSteps: gate.nextSteps
+      }))
+    });
+  });
+
+  // Compare draft state to committed state
+  app.get("/deals/:dealId/draft/diff", async (request, reply) => {
+    const paramsResult = dealParamsSchema.safeParse(request.params);
+    if (!paramsResult.success) {
+      return reply.code(400).send({ message: formatZodError(paramsResult.error) });
+    }
+
+    const deal = await prisma.deal.findUnique({
+      where: { id: paramsResult.data.dealId },
+      select: { id: true, state: true, stressMode: true }
+    });
+    if (!deal) {
+      return reply.code(404).send({ message: "Deal not found" });
+    }
+
+    const draftState = await prisma.draftState.findUnique({
+      where: { dealId: paramsResult.data.dealId },
+      include: { simulatedEvents: { orderBy: { sequenceOrder: "asc" } } }
+    });
+
+    if (!draftState) {
+      return reply.code(404).send({ message: "Draft state not found" });
+    }
+
+    // Get committed events
+    const committedEvents = await prisma.event.findMany({
+      where: { dealId: paramsResult.data.dealId },
+      select: { id: true, type: true, createdAt: true, actorId: true },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+    });
+
+    // Project committed state
+    const committedProjection = projectDealLifecycle({
+      initialDeal: { state: DealStates.Draft, stressMode: StressModes.SM0 },
+      events: committedEvents
+    });
+
+    // Project draft state (committed + simulated)
+    const allEvents = [
+      ...committedEvents,
+      ...draftState.simulatedEvents.map((e) => ({
+        id: e.id,
+        type: e.type,
+        createdAt: e.createdAt
+      }))
+    ];
+
+    const draftProjection = projectDealLifecycle({
+      initialDeal: { state: DealStates.Draft, stressMode: StressModes.SM0 },
+      events: allEvents
+    });
+
+    return reply.code(200).send({
+      committed: {
+        state: committedProjection.state,
+        stressMode: committedProjection.stressMode,
+        eventsCount: committedEvents.length
+      },
+      draft: {
+        state: draftProjection.state,
+        stressMode: draftProjection.stressMode,
+        simulatedEventsCount: draftState.simulatedEvents.length
+      },
+      deltaEvents: draftState.simulatedEvents.map((e) => ({
+        id: e.id,
+        type: e.type,
+        actorId: e.actorId,
+        sequenceOrder: e.sequenceOrder,
+        createdAt: e.createdAt
+      }))
+    });
+  });
+
+  // Revert draft to committed state (delete all simulated events)
+  app.post("/deals/:dealId/draft/revert", async (request, reply) => {
+    const paramsResult = dealParamsSchema.safeParse(request.params);
+    if (!paramsResult.success) {
+      return reply.code(400).send({ message: formatZodError(paramsResult.error) });
+    }
+
+    const deal = await prisma.deal.findUnique({
+      where: { id: paramsResult.data.dealId },
+      select: { id: true }
+    });
+    if (!deal) {
+      return reply.code(404).send({ message: "Deal not found" });
+    }
+
+    const draftState = await prisma.draftState.findUnique({
+      where: { dealId: paramsResult.data.dealId },
+      include: { simulatedEvents: true }
+    });
+
+    if (!draftState) {
+      return reply.code(404).send({ message: "Draft state not found" });
+    }
+
+    const deletedEventsCount = draftState.simulatedEvents.length;
+
+    await prisma.$transaction([
+      prisma.simulatedEvent.deleteMany({
+        where: { draftStateId: draftState.id }
+      }),
+      prisma.projectionGate.deleteMany({
+        where: { draftStateId: draftState.id }
+      })
+    ]);
+
+    return reply.code(200).send({
+      status: "REVERTED",
+      deletedEventsCount
+    });
+  });
+
+  // Commit draft: apply all simulated events to real event log
+  app.post("/deals/:dealId/draft/commit", async (request, reply) => {
+    const paramsResult = dealParamsSchema.safeParse(request.params);
+    if (!paramsResult.success) {
+      return reply.code(400).send({ message: formatZodError(paramsResult.error) });
+    }
+
+    const deal = await prisma.deal.findUnique({
+      where: { id: paramsResult.data.dealId },
+      select: { id: true }
+    });
+    if (!deal) {
+      return reply.code(404).send({ message: "Deal not found" });
+    }
+
+    const draftState = await prisma.draftState.findUnique({
+      where: { dealId: paramsResult.data.dealId },
+      include: { simulatedEvents: { orderBy: { sequenceOrder: "asc" } } }
+    });
+
+    if (!draftState || draftState.simulatedEvents.length === 0) {
+      return reply.code(400).send({
+        message: "No draft changes to commit"
+      });
+    }
+
+    // Transaction: convert simulated events to real events
+    const appliedEvents = await prisma.$transaction(async (tx) => {
+      const events = [];
+
+      for (const simulated of draftState.simulatedEvents) {
+        const event = await tx.event.create({
+          data: {
+            dealId: paramsResult.data.dealId,
+            type: simulated.type,
+            actorId: simulated.actorId,
+            payload: simulated.payload,
+            authorityContext: simulated.authorityContext,
+            evidenceRefs: simulated.evidenceRefs
+          }
+        });
+        events.push(event);
+      }
+
+      // Delete draft state (cascade will delete simulated events and gates)
+      await tx.draftState.delete({ where: { id: draftState.id } });
+
+      // Recompute and update deal projection
+      const allEvents = await tx.event.findMany({
+        where: { dealId: paramsResult.data.dealId },
+        select: { id: true, type: true, createdAt: true },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+      });
+
+      const projection = projectDealLifecycle({
+        initialDeal: { state: DealStates.Draft, stressMode: StressModes.SM0 },
+        events: allEvents
+      });
+
+      await tx.deal.update({
+        where: { id: paramsResult.data.dealId },
+        data: {
+          state: projection.state,
+          stressMode: projection.stressMode,
+          isDraft: false
+        }
+      });
+
+      return events;
+    });
+
+    // Get final projection for response
+    const finalEvents = await prisma.event.findMany({
+      where: { dealId: paramsResult.data.dealId },
+      select: { id: true, type: true, createdAt: true },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+    });
+
+    const finalProjection = projectDealLifecycle({
+      initialDeal: { state: DealStates.Draft, stressMode: StressModes.SM0 },
+      events: finalEvents
+    });
+
+    return reply.code(200).send({
+      status: "COMMITTED",
+      appliedEvents: appliedEvents.map((e) => ({
+        id: e.id,
+        type: e.type,
+        createdAt: e.createdAt
+      })),
+      finalProjection
+    });
+  });
+
+  // ========== END DRAFT MODE ENDPOINTS ==========
 
   app.get("/deals/:dealId/artifacts", async (request, reply) => {
     const paramsResult = dealParamsSchema.safeParse(request.params);
@@ -2233,6 +2860,15 @@ export function buildServer(): FastifyInstance {
         uploaderId
       }
     });
+
+    // Record audit event for artifact upload
+    await createAuditEvent(prisma, paramsResult.data.dealId, 'ArtifactUploaded', {
+      artifactId: artifact.id,
+      filename: artifact.filename,
+      mimeType: artifact.mimeType,
+      sizeBytes: artifact.sizeBytes,
+      sha256Hex: artifact.sha256Hex
+    }, uploaderId, {}, [artifact.id]);
 
     return reply.code(201).send({
       artifactId: artifact.id,
