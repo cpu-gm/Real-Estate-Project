@@ -1,0 +1,2 @@
+c\:\\Users\\majes\\OneDrive\\Documents\\GitHub\\Github\\canonical-deal-os\\e2e:
+fixtures  page-objects	tests

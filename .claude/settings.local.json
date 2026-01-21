@@ -1,0 +1,46 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(dir /B /S)",
+      "Bash(findstr:*)",
+      "Bash(node -c:*)",
+      "Bash(BFF_DB_URL=\"file:../.data/llm-airlock.db\" node:*)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\majes\\OneDrive\\Documents\\GitHub\\Github"
+    ]
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/update-context.js"
+          }
+        ]
+      },
+      {
+        "matcher": "manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/update-context.js"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/update-context.js"
+          }
+        ]
+      }
+    ]
+  }
+}
