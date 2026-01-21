@@ -1,0 +1,29 @@
+{
+  "_comment": "Response after creating a deal - validates against dealSchema",
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "_id_comment": "UUID assigned by kernel",
+  "name": "123 Main Street Acquisition",
+  "lifecycle_state": "Draft",
+  "_lifecycle_state_comment": "New deals start in Draft state. States: Draft, UnderReview, Approved, ReadyToClose, Closed, Operating, Changed, Distressed, Exited, Terminated",
+  "stress_mode": false,
+  "_stress_mode_comment": "True if deal is in any stress mode (SM-1, SM-2, or SM-3)",
+  "stress_mode_label": "SM-0",
+  "_stress_mode_label_comment": "SM-0=Normal, SM-1=DataDisputed, SM-2=Distressed, SM-3=Frozen",
+  "truth_health": "healthy",
+  "_truth_health_comment": "Data quality indicator: healthy (green), warning (yellow), danger (red)",
+  "next_action": "Submit for review",
+  "_next_action_comment": "Suggested next step for GP",
+  "next_action_type": "OPEN_REVIEW",
+  "blocked_by": null,
+  "_blocked_by_comment": "If blocked, describes what's missing",
+  "created_date": "2026-01-21T10:00:00.000Z",
+  "updated_date": "2026-01-21T10:00:00.000Z",
+  "profile": {
+    "asset_type": "Multifamily",
+    "asset_address": "123 Main Street",
+    "asset_city": "Austin",
+    "asset_state": "TX",
+    "purchase_price": 15000000,
+    "unit_count": 120
+  }
+}

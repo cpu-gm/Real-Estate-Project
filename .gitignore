@@ -1,0 +1,39 @@
+# ============================================
+# CRE Deal Management Platform - Root .gitignore
+# ============================================
+
+# Claude Code temporary files
+tmpclaude-*-cwd
+**/tmpclaude-*-cwd
+
+# Environment files (use .env.example as template)
+.env
+.env.local
+.env.*.local
+*.local
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+null.txt

@@ -1,0 +1,45 @@
+{
+  "_comment": "Response when an action is blocked - kernel explains why and how to fix",
+  "action": "APPROVE_DEAL",
+  "_action_comment": "The action that was attempted: APPROVE_DEAL, FINALIZE_CLOSING, etc.",
+  "status": "BLOCKED",
+  "_status_comment": "BLOCKED means action cannot proceed; ALLOWED means it can",
+  "reasons": [
+    {
+      "type": "MISSING_MATERIAL",
+      "_type_comment": "Reason types: MISSING_MATERIAL, INSUFFICIENT_TRUTH, AUTHORITY, APPROVAL_THRESHOLD",
+      "message": "UnderwritingSummary material required",
+      "_message_comment": "Human-readable explanation",
+      "materialType": "UnderwritingSummary",
+      "_materialType_comment": "Which material type is missing",
+      "requiredTruth": "HUMAN",
+      "_requiredTruth_comment": "Minimum truth level needed: DOC (documentary) > HUMAN (attested) > AI (inferred)",
+      "currentTruth": null,
+      "_currentTruth_comment": "Current truth level of the material (null means material doesn't exist)"
+    },
+    {
+      "type": "APPROVAL_THRESHOLD",
+      "message": "Requires 1 GP approval(s), have 0",
+      "threshold": 1,
+      "_threshold_comment": "Number of approvals needed",
+      "rolesAllowed": ["GP"],
+      "_rolesAllowed_comment": "Roles that can provide approval",
+      "currentCount": 0
+    }
+  ],
+  "nextSteps": [
+    {
+      "description": "Upload UnderwritingSummary with HUMAN verification",
+      "_description_comment": "What to do to unblock this action",
+      "canBeFixedByRoles": ["GP"],
+      "_canBeFixedByRoles_comment": "Roles that can perform this fix",
+      "canBeOverriddenByRoles": ["GP"],
+      "_canBeOverriddenByRoles_comment": "Roles that can override (skip) this requirement"
+    },
+    {
+      "description": "Grant approval as GP",
+      "canBeFixedByRoles": ["GP"],
+      "canBeOverriddenByRoles": []
+    }
+  ]
+}

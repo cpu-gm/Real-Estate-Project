@@ -1,0 +1,24 @@
+{
+  "_comment": "Kernel event: Deal approved by GP - transitions from UnderReview to Approved",
+  "type": "DealApproved",
+  "_type_comment": "This is a GATED event - requires authority validation and material requirements",
+  "actorId": "550e8400-e29b-41d4-a716-446655440001",
+  "_actorId_comment": "UUID of the GP who approved the deal",
+  "payload": {
+    "_comment": "Approval-specific data",
+    "approvalNotes": "All underwriting materials verified and approved",
+    "_approvalNotes_comment": "Optional notes from the approver"
+  },
+  "authorityContext": {
+    "_comment": "Authority rules that permitted this approval",
+    "role": "GP",
+    "_role_comment": "Must be GP to approve (per authority rules)",
+    "overrideReason": null,
+    "_overrideReason_comment": "If not null, this approval bypassed normal material requirements"
+  },
+  "evidenceRefs": [
+    "artifact-uuid-underwriting-summary",
+    "artifact-uuid-rent-roll"
+  ],
+  "_evidenceRefs_comment": "Artifact UUIDs that support this approval - linked to UnderwritingSummary material"
+}

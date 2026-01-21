@@ -1,0 +1,36 @@
+{
+  "name": "cre-deal-management",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CRE Deal Management Platform - Monorepo",
+  "type": "module",
+  "scripts": {
+    "docker:up": "docker-compose -f canonical-deal-os/docker-compose.yml up",
+    "docker:down": "docker-compose -f canonical-deal-os/docker-compose.yml down",
+    "docker:build": "docker-compose -f canonical-deal-os/docker-compose.yml build",
+    "kernel:dev": "npm --prefix cre-kernel-phase1 run dev:api",
+    "kernel:test": "npm --prefix cre-kernel-phase1 test",
+    "kernel:build": "npm --prefix cre-kernel-phase1 run build",
+    "bff:dev": "npm --prefix canonical-deal-os run bff",
+    "bff:test": "npm --prefix canonical-deal-os test",
+    "ui:dev": "npm --prefix canonical-deal-os run dev",
+    "start": "npm --prefix canonical-deal-os run start",
+    "validate:contracts": "node scripts/validate-contracts.js",
+    "lint": "npm --prefix canonical-deal-os run lint",
+    "lint:fix": "npm --prefix canonical-deal-os run lint:fix",
+    "test": "npm run kernel:test && npm run bff:test",
+    "clean:tmp": "git clean -fd tmpclaude-*-cwd",
+    "health": "npm --prefix canonical-deal-os run health"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/cre-deal-management.git"
+  },
+  "keywords": [
+    "commercial-real-estate",
+    "deal-management",
+    "event-sourcing"
+  ],
+  "author": "",
+  "license": "UNLICENSED"
+}

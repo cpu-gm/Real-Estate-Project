@@ -1,0 +1,32 @@
+{
+  "_comment": "Request to create a new deal - validates against createDealRequestSchema",
+  "name": "123 Main Street Acquisition",
+  "profile": {
+    "_comment": "Optional deal profile - all fields are nullable",
+    "asset_type": "Multifamily",
+    "_asset_type_comment": "Property type: Multifamily, Office, Retail, Industrial, etc.",
+    "asset_address": "123 Main Street",
+    "asset_city": "Austin",
+    "asset_state": "TX",
+    "purchase_price": 15000000,
+    "_purchase_price_comment": "Total acquisition price in dollars",
+    "unit_count": 120,
+    "_unit_count_comment": "Number of units (for multifamily)",
+    "square_footage": 95000,
+    "year_built": 2018,
+    "cap_rate": 5.5,
+    "_cap_rate_comment": "Capitalization rate as percentage (NOI / Purchase Price * 100)",
+    "noi": 825000,
+    "_noi_comment": "Net Operating Income - annual revenue minus operating expenses",
+    "ltv": 65,
+    "_ltv_comment": "Loan-to-value ratio as percentage",
+    "dscr": 1.35,
+    "_dscr_comment": "Debt Service Coverage Ratio - NOI / Annual Debt Service",
+    "senior_debt": 9750000,
+    "mezzanine_debt": null,
+    "preferred_equity": 1500000,
+    "common_equity": 3750000,
+    "gp_name": "Canonical Capital Partners",
+    "lender_name": "First National Bank"
+  }
+}

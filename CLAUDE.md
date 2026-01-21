@@ -112,9 +112,20 @@ npm run db:seed:auth  # Seed auth test users
 
 ### Validation
 ```bash
-npm run lint          # ESLint
-npm run lint:fix      # Auto-fix lint issues
-npm run validate:all  # Run all validations
+npm run lint              # ESLint
+npm run lint:fix          # Auto-fix lint issues
+npm run validate:contracts # Validate fixtures against Zod schemas
+npm run validate:all      # Run all validations
+```
+
+### Root Commands (from repo root)
+```bash
+npm run docker:up         # Start all services via Docker
+npm run docker:down       # Stop all Docker services
+npm run start             # Start all services (BFF + Kernel + Vite)
+npm run test              # Run all tests (Kernel + BFF)
+npm run validate:contracts # Validate contract fixtures
+npm run clean:tmp         # Remove tmpclaude-* temp files
 ```
 
 ---
@@ -152,12 +163,40 @@ Proxies requests to Kernel API at localhost:3001
 ## Documentation Index
 | File | Purpose |
 |------|---------|
+| `CONTEXT.md` | Quick start guide and architecture overview |
+| `docs/ARCHITECTURE.md` | Technical deep dive into system design |
+| `docs/CONTRIBUTING.md` | Development workflow and adding features |
+| `contracts/README.md` | Schema guide for contract-first development |
 | `canonical-deal-os/SECURITY_GUIDELINES.md` | **Security patterns (READ FIRST for new endpoints)** |
 | `canonical-deal-os/LP_API_REFERENCE.md` | Full LP endpoint documentation |
 | `canonical-deal-os/DEPLOYMENT_GUIDE.md` | Staging/prod deployment |
 | `canonical-deal-os/LP_IMPLEMENTATION_STATUS.md` | Feature completion status |
 | `canonical-deal-os/CLAUDE.md` | Project-specific dev commands |
 | `cre-kernel-phase1/README.md` | Kernel setup and API docs |
+
+---
+
+## Contract System
+
+This project uses **contract-first development** with Zod schemas as the single source of truth.
+
+### Key Locations
+- **HTTP schemas**: `canonical-deal-os/src/lib/contracts.js` (main Zod definitions)
+- **Event schemas**: `cre-kernel-phase1/packages/shared/src/index.ts` (types)
+- **Kernel inline**: `cre-kernel-phase1/apps/kernel-api/src/server.ts` (lines 20-123)
+- **Fixtures**: `/fixtures/http/` and `/fixtures/events/` (annotated examples)
+- **Documentation**: `/contracts/README.md` (beginner guide)
+
+### Validation
+```bash
+npm run validate:contracts  # Validates fixtures against Zod schemas
+```
+
+### Adding New Contracts
+1. Define schema in `contracts.js`
+2. Create fixture in `/fixtures/` with `_comment` annotations
+3. Add to `httpSchemaMap` in `scripts/validate-contracts.js`
+4. Run `npm run validate:contracts` to verify
 
 ---
 
@@ -191,11 +230,11 @@ See `canonical-deal-os/SECURITY_GUIDELINES.md` for full patterns and examples.
 ---
 
 ## Current Project State
-<!-- Auto-updated by SessionEnd: 2026-01-20 2:53:24 PM -->
+<!-- Auto-updated by PreCompact: 2026-01-21 10:33:14 AM -->
 
 ### Session Info
-- Last compaction/session end: 2026-01-20 2:53:24 PM
-- Hook trigger: SessionEnd
+- Last compaction/session end: 2026-01-21 10:33:14 AM
+- Hook trigger: PreCompact
 
 ### Active Work
 - [Review and update manually after resuming]
@@ -204,7 +243,7 @@ See `canonical-deal-os/SECURITY_GUIDELINES.md` for full patterns and examples.
 - [Update as needed]
 
 ### Recent Changes
-- Session ended/compacted on 2026-01-20
+- Session ended/compacted on 2026-01-21
 
 ### Next Steps
 - [Continue from where you left off]

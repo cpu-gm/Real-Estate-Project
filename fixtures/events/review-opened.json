@@ -1,0 +1,19 @@
+{
+  "_comment": "Kernel event: Deal submitted for review - transitions from Draft to UnderReview",
+  "type": "ReviewOpened",
+  "_type_comment": "Event types defined in cre-kernel-phase1/packages/shared/src/index.ts",
+  "actorId": "550e8400-e29b-41d4-a716-446655440001",
+  "_actorId_comment": "UUID of the person or system that triggered this event",
+  "payload": {
+    "_comment": "Event-specific data",
+    "reason": "Initial deal submission",
+    "_reason_comment": "Why the review was opened"
+  },
+  "authorityContext": {
+    "_comment": "Rules/roles that permitted this event",
+    "role": "GP",
+    "_role_comment": "Role of the actor: GP, LP, Admin, Lender, Counsel, etc."
+  },
+  "evidenceRefs": [],
+  "_evidenceRefs_comment": "Array of artifact UUIDs that support this event (empty for ReviewOpened)"
+}

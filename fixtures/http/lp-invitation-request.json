@@ -1,0 +1,13 @@
+{
+  "_comment": "Request to invite an LP to the portal - triggers email via BFF",
+  "lpEntityName": "Acme Capital Partners LP",
+  "_lpEntityName_comment": "Legal entity name of the LP investor",
+  "lpEmail": "investments@acmecapital.com",
+  "_lpEmail_comment": "Email address to receive the invitation link",
+  "dealId": "550e8400-e29b-41d4-a716-446655440000",
+  "_dealId_comment": "UUID of the deal this LP is investing in",
+  "commitment": 500000,
+  "_commitment_comment": "Dollar amount the LP is committing to invest",
+  "ownershipPct": 5.0,
+  "_ownershipPct_comment": "Percentage ownership in the deal (0-100)"
+}

@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ============================================
+  # Contract Validation
+  # Ensures all fixtures match their Zod schemas
+  # ============================================
+  validate-contracts:
+    name: Contract Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: canonical-deal-os/package-lock.json
+
+      - name: Install BFF dependencies
+        run: npm ci
+        working-directory: canonical-deal-os
+
+      - name: Validate contract fixtures
+        run: node scripts/validate-contracts.js
+
+  # ============================================
+  # Kernel Tests
+  # Tests the event ledger and state machine
+  # ============================================
+  kernel-test:
+    name: Kernel Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: canonical
+          POSTGRES_PASSWORD: canonical-dev-password
+          POSTGRES_DB: cre_kernel_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: cre-kernel-phase1/package-lock.json
+
+      - name: Install Kernel dependencies
+        run: npm ci
+        working-directory: cre-kernel-phase1
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+        working-directory: cre-kernel-phase1/apps/kernel-api
+
+      - name: Run database migrations
+        run: npx prisma migrate deploy
+        working-directory: cre-kernel-phase1/apps/kernel-api
+        env:
+          DATABASE_URL: postgresql://canonical:canonical-dev-password@localhost:5432/cre_kernel_test
+
+      - name: Run Kernel tests
+        run: npm test
+        working-directory: cre-kernel-phase1
+        env:
+          DATABASE_URL: postgresql://canonical:canonical-dev-password@localhost:5432/cre_kernel_test
+
+  # ============================================
+  # BFF Tests, Lint, and Build
+  # Tests the Backend-for-Frontend layer
+  # ============================================
+  bff-test:
+    name: BFF Tests + Lint + Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: canonical-deal-os/package-lock.json
+
+      - name: Install BFF dependencies
+        run: npm ci
+        working-directory: canonical-deal-os
+
+      - name: Run ESLint
+        run: npm run lint
+        working-directory: canonical-deal-os
+
+      - name: Run BFF tests
+        run: npm test -- --passWithNoTests
+        working-directory: canonical-deal-os
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: canonical-deal-os
+
+  # ============================================
+  # Security Checks
+  # Basic secret scanning and dependency audit
+  # ============================================
+  security:
+    name: Security Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for secrets in code
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
+          head: ${{ github.sha }}
+          extra_args: --only-verified
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Audit BFF dependencies
+        run: npm audit --audit-level=high
+        working-directory: canonical-deal-os
+        continue-on-error: true
+
+      - name: Audit Kernel dependencies
+        run: npm audit --audit-level=high
+        working-directory: cre-kernel-phase1
+        continue-on-error: true
