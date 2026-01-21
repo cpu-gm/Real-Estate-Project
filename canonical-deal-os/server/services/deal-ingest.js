@@ -40,7 +40,12 @@ const DEAL_DRAFT_STATUSES = {
   OM_DRAFTED: 'OM_DRAFTED',
   OM_BROKER_APPROVED: 'OM_BROKER_APPROVED',
   OM_APPROVED_FOR_MARKETING: 'OM_APPROVED_FOR_MARKETING',
-  DISTRIBUTED: 'DISTRIBUTED'
+  DISTRIBUTED: 'DISTRIBUTED',
+  // Listing workflow statuses
+  LISTED_PENDING_BROKER: 'LISTED_PENDING_BROKER',    // Listed, waiting for broker to accept
+  LISTED_ACTIVE: 'LISTED_ACTIVE',                     // Listed and active on market
+  LISTED_UNDER_CONTRACT: 'LISTED_UNDER_CONTRACT',     // Has accepted offer
+  LISTING_CANCELLED: 'LISTING_CANCELLED'              // Listing was cancelled
 };
 
 // Asset types for classification
@@ -583,6 +588,7 @@ class DealIngestService {
     const {
       status,
       brokerId,
+      userId, // New: show deals where user is broker OR seller
       limit = 50,
       offset = 0
     } = options;
@@ -593,11 +599,24 @@ class DealIngestService {
       where.status = status;
     }
 
-    if (brokerId) {
+    // If userId provided, show deals where user is either broker or seller
+    if (userId) {
+      where.OR = [
+        { brokers: { some: { userId } } },
+        { seller: { userId } }
+      ];
+    } else if (brokerId) {
+      // Legacy: only filter by broker
       where.brokers = {
         some: { userId: brokerId }
       };
     }
+
+    console.log('[DealIngestService] listDealDrafts query', {
+      organizationId,
+      userId,
+      where: JSON.stringify(where, null, 2)
+    });
 
     const [drafts, total] = await Promise.all([
       prisma.dealDraft.findMany({

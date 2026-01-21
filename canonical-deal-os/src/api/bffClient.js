@@ -99,10 +99,15 @@ async function requestJson(path, options = {}) {
     headers["Authorization"] = `Bearer ${authToken}`;
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
+  const fullUrl = `${API_BASE}${path}`;
+  debugLog("bff", `[BFF Request] ${options.method || 'GET'} ${fullUrl}`, { hasAuth: !!authToken });
+
+  const response = await fetch(fullUrl, {
     headers,
     ...options
   });
+
+  debugLog("bff", `[BFF Response] ${response.status} ${response.statusText}`, { url: fullUrl });
 
   const text = await response.text();
   let data = null;
@@ -596,6 +601,45 @@ export const bff = {
         method: "GET",
         schemaName: "IntakeStatsResponse"
       });
+    },
+    convertToDeal: async (id, winningBuyerUserId, notes = null) => {
+      const path = `/intake/draft/${id}/convert`;
+      const data = await requestJson(path, {
+        method: "POST",
+        body: JSON.stringify({ winningBuyerUserId, notes })
+      });
+      // Returns { success, kernelDealId, draftId, message }
+      return data;
+    },
+    // Listing workflow methods
+    updateDraft: async (id, payload) => {
+      const path = `/intake/draft/${id}`;
+      const data = await requestJson(path, {
+        method: "PATCH",
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+    createListing: async (id, payload) => {
+      const path = `/intake/draft/${id}/listing`;
+      const data = await requestJson(path, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      // Returns { draft, brokerInvitation, message }
+      return data;
+    },
+    getListing: async (id) => {
+      const path = `/intake/draft/${id}/listing`;
+      const data = await requestJson(path);
+      return data;
+    },
+    cancelListing: async (id) => {
+      const path = `/intake/draft/${id}/listing`;
+      const data = await requestJson(path, {
+        method: "DELETE"
+      });
+      return data;
     }
   },
   om: {
@@ -725,6 +769,15 @@ export const bff = {
         method: "POST",
         schemaName: "AddRecipientsResponse"
       });
+    },
+    addByEmail: async (distributionId, emails) => {
+      const path = `/distribution/${distributionId}/add-by-email`;
+      const data = await requestJson(path, {
+        method: "POST",
+        body: JSON.stringify({ emails })
+      });
+      // Returns { added: [...], errors?: [...] }
+      return data;
     },
     get: async (distributionId) => {
       const path = `/distribution/${distributionId}`;

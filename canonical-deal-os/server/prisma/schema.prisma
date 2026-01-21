@@ -1378,15 +1378,18 @@ model Organization {
   name      String
   slug      String   @unique                        // URL-friendly identifier
   domain    String?  @unique                        // For SSO domain matching (e.g., "acme.com")
+  type      String   @default("GP")                 // GP, BROKERAGE, BUYER - organization type
   status    String   @default("ACTIVE")             // ACTIVE, SUSPENDED, DELETED
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   users     AuthUser[]
+  brokerUsers AuthUser[] @relation("BrokerageToUser")  // Brokers belonging to this brokerage firm
 
   @@index([slug])
   @@index([domain])
   @@index([status])
+  @@index([type])
 }
 
 model AuthUser {
@@ -1395,7 +1398,7 @@ model AuthUser {
   passwordHash   String?                            // Null for SSO-only users
   name           String
   organizationId String
-  role           String    @default("GP Analyst")   // GP, GP Analyst, Lender, Counsel, Regulator, Auditor, LP, Admin
+  role           String    @default("GP Analyst")   // GP, GP Analyst, Lender, Counsel, Regulator, Auditor, LP, Admin, Broker, Brokerage Admin
   status         String    @default("PENDING")      // PENDING, ACTIVE, SUSPENDED
   ssoProvider    String?                            // GOOGLE, MICROSOFT
   ssoId          String?                            // Provider's user ID
@@ -1404,12 +1407,21 @@ model AuthUser {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
+  // Broker-specific fields (only populated when role = Broker or Brokerage Admin)
+  brokerageId        String?                        // Brokerage firm (Organization with type=BROKERAGE)
+  brokerLicenseNo    String?                        // Real estate license number
+  brokerLicenseState String?                        // State where licensed (e.g., "CA", "NY")
+
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  brokerage      Organization? @relation("BrokerageToUser", fields: [brokerageId], references: [id])
   sessions       AuthSession[]
   verificationRequests UserVerificationRequest[]
+  listingAgreementsAsBroker ListingAgreement[] @relation("BrokerAgreements")
+  listingAgreementsAsSeller ListingAgreement[] @relation("SellerAgreements")
 
   @@index([email])
   @@index([organizationId])
+  @@index([brokerageId])
   @@index([status])
   @@index([role])
 }
@@ -2414,12 +2426,16 @@ model DealDraft {
   propertyAddress   String?
   assetType         String?                             // MULTIFAMILY, OFFICE, RETAIL, INDUSTRIAL, etc.
   askingPrice       Float?
+  askingPriceMin    Float?                              // For price range listings
+  askingPriceMax    Float?                              // For price range listings
   unitCount         Int?
   totalSF           Int?
 
   // Listing configuration (set by seller)
   listingType       String?                             // PUBLIC, PRIVATE - seller decides
   isAnonymousSeller Boolean   @default(false)           // Hide seller identity
+  listedAt          DateTime?                           // When listing was created
+  listedBy          String?                             // User who listed the property
 
   // Kernel deal reference (created after seller approval)
   kernelDealId      String?   @unique                   // Link to kernel deal when promoted
@@ -2436,6 +2452,7 @@ model DealDraft {
   documents         DealDraftDocument[]
   omVersions        OMVersion[]
   distributions     DealDistribution[]
+  listingAgreements ListingAgreement[]
 
   @@index([organizationId])
   @@index([status])
@@ -2539,6 +2556,9 @@ model DealClaim {
   verifiedByName    String?
   verifiedAt        DateTime?
   rejectionReason   String?
+
+  // Provenance badge - indicates source reliability for buyers
+  verificationBadge String?                             // SELLER_ATTESTED, DOCUMENT_VERIFIED, BROKER_ASSUMPTION, THIRD_PARTY
 
   // Conflict tracking
   conflictGroupId   String?                             // Groups claims that conflict
@@ -2926,4 +2946,138 @@ model DealIntakeEventLog {
   @@index([eventType])
   @@index([actorId])
   @@index([occurredAt])
+}
+
+// ============================================================================
+// LISTING AGREEMENT - Formalizes seller-broker relationship
+// ============================================================================
+// Defines the legal relationship between seller and broker for a listing.
+// Required before broker can market the property.
+
+model ListingAgreement {
+  id                String    @id @default(uuid())
+  dealDraftId       String
+  dealDraft         DealDraft @relation(fields: [dealDraftId], references: [id], onDelete: Cascade)
+
+  // Agreement type - determines commission obligations
+  agreementType     String                              // EXCLUSIVE_RIGHT_TO_SELL, EXCLUSIVE_AGENCY, OPEN
+
+  // Parties
+  sellerUserId      String                              // GP who owns the property
+  seller            AuthUser  @relation("SellerAgreements", fields: [sellerUserId], references: [id])
+  sellerEntityName  String?                             // Legal entity name if different from user
+
+  brokerUserId      String                              // Broker representing seller
+  broker            AuthUser  @relation("BrokerAgreements", fields: [brokerUserId], references: [id])
+  brokerageId       String?                             // Brokerage firm (if applicable)
+
+  // Financial terms
+  commissionPercent Float?                              // Commission as percentage (e.g., 6.0)
+  commissionFlat    Float?                              // Or flat fee (mutually exclusive with percent)
+  listingPriceMin   Float?                              // Listing price range min
+  listingPriceMax   Float?                              // Listing price range max
+
+  // Term dates
+  termStartDate     DateTime                            // Agreement effective date
+  termEndDate       DateTime                            // Agreement expiration
+
+  // Confirmation workflow - both parties must confirm
+  sellerConfirmedAt DateTime?                           // When seller accepted terms
+  brokerConfirmedAt DateTime?                           // When broker accepted terms
+  status            String    @default("DRAFT")         // DRAFT, PENDING_SELLER, PENDING_BROKER, ACTIVE, EXPIRED, TERMINATED
+
+  // Termination fields
+  terminatedAt      DateTime?                           // When agreement was terminated
+  terminatedBy      String?                             // User ID who terminated
+  terminationReason String?                             // Reason for termination
+
+  // Generated document
+  documentUrl       String?                             // URL to signed PDF
+
+  // Timestamps
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Relations
+  commissionAgreements CommissionAgreement[]
+
+  @@index([dealDraftId])
+  @@index([sellerUserId])
+  @@index([brokerUserId])
+  @@index([status])
+  @@index([agreementType])
+}
+
+// ============================================================================
+// COMMISSION AGREEMENT - Tracks commission terms and payout
+// ============================================================================
+// Detailed commission tracking for when deal closes.
+// Both parties must confirm terms.
+
+model CommissionAgreement {
+  id                  String    @id @default(uuid())
+  listingAgreementId  String
+  listingAgreement    ListingAgreement @relation(fields: [listingAgreementId], references: [id], onDelete: Cascade)
+
+  // Commission split (can differ from listing agreement if negotiated)
+  sellerPaysPercent   Float?                            // Percent paid by seller
+  buyerPaysPercent    Float?                            // Percent paid by buyer (if any)
+  flatFee             Float?                            // Or flat fee
+
+  // Confirmation - all parties must confirm
+  sellerConfirmedAt   DateTime?
+  brokerConfirmedAt   DateTime?
+  buyerConfirmedAt    DateTime?                         // If buyer pays part of commission
+
+  // Payout tracking
+  closingDate         DateTime?                         // When deal closed
+  salePrice           Float?                            // Final sale price
+  payoutAmount        Float?                            // Calculated commission
+  payoutStatus        String?                           // PENDING, PAID, DISPUTED
+  payoutDate          DateTime?
+
+  // Timestamps
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([listingAgreementId])
+  @@index([payoutStatus])
+}
+
+// ============================================================================
+// BROKER INVITATION - Tracks broker invitations from sellers
+// ============================================================================
+// When a seller invites a broker to represent their property.
+
+model BrokerInvitation {
+  id                String    @id @default(uuid())
+  dealDraftId       String?                             // If for a specific listing
+  organizationId    String                              // Seller's organization
+
+  // Inviter (seller)
+  invitedBy         String                              // User ID of seller/GP
+  invitedByName     String
+  invitedByEmail    String
+
+  // Invitee (broker)
+  brokerEmail       String                              // Email to invite
+  brokerName        String?                             // If known
+  brokerFirmName    String?                             // Brokerage firm name
+
+  // Status
+  status            String    @default("PENDING")       // PENDING, ACCEPTED, DECLINED, EXPIRED
+  token             String    @unique                   // Unique token for invitation link
+  expiresAt         DateTime                            // Invitation expiration
+
+  // Response
+  respondedAt       DateTime?
+  respondedByUserId String?                             // AuthUser ID if broker already had account
+
+  // Timestamps
+  sentAt            DateTime  @default(now())
+
+  @@index([brokerEmail])
+  @@index([status])
+  @@index([token])
+  @@index([dealDraftId])
 }
