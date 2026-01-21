@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900;
+}
+
+pre {
+  @apply bg-slate-100 rounded-md p-3 overflow-x-auto text-sm;
+}
+
+code {
+  @apply font-mono text-sm;
+}

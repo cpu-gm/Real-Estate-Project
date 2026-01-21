@@ -1,0 +1,29 @@
+{
+  "name": "kernel-api",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "prisma:migrate": "tsx scripts/prisma-migrate.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^8.5.0",
+    "@fastify/multipart": "^8.3.1",
+    "@kernel/shared": "0.1.0",
+    "@prisma/client": "^5.22.0",
+    "archiver": "^7.0.1",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "pdfkit": "^0.15.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "prisma": "^5.22.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "cre-kernel-phase1",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm --workspace apps/kernel-api run dev",
+    "dev:ui": "npm --workspace apps/kernel-ui run dev",
+    "test": "npm --workspace apps/kernel-api run test",
+    "prisma:migrate": "npm --workspace apps/kernel-api run prisma:migrate"
+  }
+}

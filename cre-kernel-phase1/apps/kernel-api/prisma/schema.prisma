@@ -1,0 +1,276 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ActorType {
+  HUMAN
+  SYSTEM
+}
+
+enum TruthClass {
+  DOC
+  HUMAN
+  AI
+}
+
+model Deal {
+  id              String           @id @default(uuid()) @db.Uuid
+  name            String
+  state           String
+  stressMode      String
+  isDraft         Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  actorRoles      ActorRole[]
+  authorityRules  AuthorityRule[]
+  artifacts       Artifact[]
+  artifactLinks   ArtifactLink[]
+  materialObjects MaterialObject[]
+  materialRevisions MaterialRevision[]
+  events          Event[]
+  draftState      DraftState?      @relation("DealDraftState")
+  obligations     Obligation[]     @relation("DealObligations")
+  relationships   Relationship[]   @relation("DealRelationships")
+}
+
+model Actor {
+  id                  String         @id @default(uuid()) @db.Uuid
+  name                String
+  type                ActorType
+  createdAt           DateTime       @default(now())
+  actorRoles          ActorRole[]
+  events              Event[]
+  obligationsFrom     Obligation[]   @relation("ObligationFrom")
+  obligationsTo       Obligation[]   @relation("ObligationTo")
+  relationshipsAsA    Relationship[] @relation("RelationshipA")
+  relationshipsAsB    Relationship[] @relation("RelationshipB")
+}
+
+model Role {
+  id         String      @id @default(uuid()) @db.Uuid
+  name       String
+  orgId      String?
+  createdAt  DateTime    @default(now())
+  actorRoles ActorRole[]
+}
+
+model ActorRole {
+  actorId   String   @db.Uuid
+  roleId    String   @db.Uuid
+  dealId    String?  @db.Uuid
+  createdAt DateTime @default(now())
+
+  actor Actor @relation(fields: [actorId], references: [id])
+  role  Role  @relation(fields: [roleId], references: [id])
+  deal  Deal? @relation(fields: [dealId], references: [id])
+
+  @@id([actorId, roleId, createdAt])
+}
+
+model AuthorityRule {
+  id            String   @id @default(uuid()) @db.Uuid
+  dealId        String   @db.Uuid
+  action        String
+  threshold     Int
+  rolesAllowed  String[]
+  rolesRequired String[]
+  createdAt     DateTime @default(now())
+
+  deal Deal @relation(fields: [dealId], references: [id])
+}
+
+model MaterialObject {
+  id         String     @id @default(uuid()) @db.Uuid
+  dealId     String     @db.Uuid
+  type       String
+  data       Json
+  truthClass TruthClass
+  asOf       DateTime?
+  sourceRef  String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  revisions  MaterialRevision[]
+
+  deal Deal @relation(fields: [dealId], references: [id])
+}
+
+model MaterialRevision {
+  id         String     @id @default(uuid()) @db.Uuid
+  materialId String     @db.Uuid
+  dealId     String     @db.Uuid
+  type       String
+  data       Json
+  truthClass TruthClass
+  createdAt  DateTime   @default(now())
+
+  material MaterialObject @relation(fields: [materialId], references: [id])
+  deal     Deal          @relation(fields: [dealId], references: [id])
+
+  @@index([dealId, createdAt])
+  @@index([materialId, createdAt])
+}
+
+model Artifact {
+  id         String   @id @default(uuid()) @db.Uuid
+  dealId     String   @db.Uuid
+  filename   String
+  mimeType   String
+  sizeBytes  Int
+  sha256Hex  String   @unique
+  storageKey String
+  uploaderId String?  @db.Uuid
+  createdAt  DateTime @default(now())
+
+  deal  Deal           @relation(fields: [dealId], references: [id])
+  links ArtifactLink[]
+
+  @@index([dealId])
+}
+
+model ArtifactLink {
+  id         String   @id @default(uuid()) @db.Uuid
+  dealId     String   @db.Uuid
+  artifactId String   @db.Uuid
+  eventId    String?  @db.Uuid
+  materialId String?  @db.Uuid
+  tag        String?
+  createdAt  DateTime @default(now())
+
+  deal     Deal     @relation(fields: [dealId], references: [id])
+  artifact Artifact @relation(fields: [artifactId], references: [id])
+
+  @@index([dealId])
+  @@index([artifactId])
+}
+
+model Event {
+  id               String   @id @default(uuid()) @db.Uuid
+  dealId           String   @db.Uuid
+  type             String
+  payload          Json
+  actorId          String?  @db.Uuid
+  authorityContext Json
+  evidenceRefs     String[]
+
+  // Hash chain for tamper detection (matching BFF DealEvent pattern)
+  sequenceNumber     Int      @default(0)
+  previousEventHash  String?
+  eventHash          String?
+
+  createdAt        DateTime @default(now())
+
+  deal  Deal   @relation(fields: [dealId], references: [id])
+  actor Actor? @relation(fields: [actorId], references: [id])
+
+  @@index([dealId, sequenceNumber])
+}
+
+model DraftState {
+  id         String   @id @default(uuid()) @db.Uuid
+  dealId     String   @unique @db.Uuid
+
+  // Simulation state
+  simulatedEvents  SimulatedEvent[]
+  gatesPreviewed   ProjectionGate[]
+
+  // Metadata
+  lastModified     DateTime     @updatedAt
+  createdAt        DateTime     @default(now())
+
+  deal Deal @relation("DealDraftState", fields: [dealId], references: [id], onDelete: Cascade)
+}
+
+model SimulatedEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  draftStateId String   @db.Uuid
+
+  type             String
+  actorId          String?  @db.Uuid
+  payload          Json
+  authorityContext Json
+  evidenceRefs     String[]
+
+  sequenceOrder    Int      // For ordering in simulation
+  createdAt        DateTime @default(now())
+
+  draftState DraftState @relation(fields: [draftStateId], references: [id], onDelete: Cascade)
+
+  @@index([draftStateId, sequenceOrder])
+}
+
+model ProjectionGate {
+  id           String   @id @default(uuid()) @db.Uuid
+  draftStateId String   @db.Uuid
+
+  action       String   // The action being tested
+  isBlocked    Boolean
+  reasons      Json     // Serialized BlockedReason[]
+  nextSteps    Json     // Serialized NextStep[]
+
+  createdAt    DateTime @default(now())
+
+  draftState DraftState @relation(fields: [draftStateId], references: [id], onDelete: Cascade)
+
+  @@index([draftStateId, action])
+}
+
+// ========== GRAPH FOUNDATIONS ==========
+// These models lay the foundation for the future Rights & Obligations Graph
+// without requiring immediate API implementation
+
+model Obligation {
+  id         String   @id @default(uuid()) @db.Uuid
+  dealId     String   @db.Uuid
+
+  // Who owes what
+  fromActorId   String   @db.Uuid
+  toActorId     String?  @db.Uuid  // Null = obligation to deal itself
+
+  // What is owed
+  obligationType   String   // "APPROVAL", "MATERIAL_SUBMISSION", "ATTESTATION"
+  action           String   // Related action (e.g., "APPROVE_DEAL")
+
+  // Status
+  status           String   // "PENDING", "FULFILLED", "WAIVED", "EXPIRED"
+  fulfilledByEventId String? @db.Uuid
+
+  // Metadata
+  dueBy      DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  deal       Deal      @relation("DealObligations", fields: [dealId], references: [id])
+  fromActor  Actor     @relation("ObligationFrom", fields: [fromActorId], references: [id])
+  toActor    Actor?    @relation("ObligationTo", fields: [toActorId], references: [id])
+
+  @@index([dealId, status])
+  @@index([fromActorId, status])
+}
+
+model Relationship {
+  id         String   @id @default(uuid()) @db.Uuid
+  dealId     String   @db.Uuid
+
+  // Who is related to whom
+  actorAId   String   @db.Uuid
+  actorBId   String   @db.Uuid
+
+  // Type of relationship
+  relationType  String  // "REPRESENTS" (legal counsel), "EMPLOYS", "LENDS_TO", etc.
+
+  // Metadata
+  establishedAt  DateTime @default(now())
+  terminatedAt   DateTime?
+
+  deal      Deal   @relation("DealRelationships", fields: [dealId], references: [id])
+  actorA    Actor  @relation("RelationshipA", fields: [actorAId], references: [id])
+  actorB    Actor  @relation("RelationshipB", fields: [actorBId], references: [id])
+
+  @@index([dealId])
+  @@index([actorAId, relationType])
+}

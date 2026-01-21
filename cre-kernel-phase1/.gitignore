@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.data/
+.env
+# Node
+node_modules/
+
+# Next.js
+.next/
+out/
+.vercel/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
