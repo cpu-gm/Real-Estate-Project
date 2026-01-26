@@ -14,7 +14,7 @@
     "@kernel/shared": "0.1.0",
     "@prisma/client": "^5.22.0",
     "archiver": "^7.0.1",
-    "dotenv": "^16.4.5",
+    "dotenv": "^17.2.3",
     "fastify": "^4.28.1",
     "pdfkit": "^0.15.0",
     "zod": "^3.25.76"
