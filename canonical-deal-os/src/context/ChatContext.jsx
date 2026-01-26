@@ -410,6 +410,43 @@ export function ChatProvider({ children }) {
     }
   }, [loadConversations]);
 
+  // Open a deal inquiry thread (creates if doesn't exist)
+  const openDealInquiryThread = useCallback(async (dealDraftId, buyerUserId, context = {}) => {
+    console.log('[ChatContext] Opening deal inquiry thread', { dealDraftId, buyerUserId, context });
+    try {
+      // Get or create the inquiry thread
+      const result = await bff.broker.getInquiryThread(dealDraftId, buyerUserId);
+      const { conversationId, isNew } = result;
+
+      console.log('[ChatContext] Got inquiry thread', { conversationId, isNew });
+
+      // If it's a new conversation and we have buyer's questions, send them as initial context
+      if (isNew && context.buyerQuestions && context.buyerQuestions.length > 0) {
+        // Add a system-style message with the buyer's questions
+        const questionsText = context.buyerQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n');
+        const contextMessage = `**Buyer's Initial Questions:**\n${questionsText}`;
+
+        // Send as a context message (handled by server)
+        await bff.chat.sendMessage(conversationId, {
+          content: contextMessage,
+          contentType: 'system_context'
+        });
+      }
+
+      // Reload conversations to get the new one
+      await loadConversations();
+
+      // Select and open the conversation
+      await selectConversation(conversationId);
+      openPanel();
+
+      return { conversationId, isNew };
+    } catch (error) {
+      console.error('[ChatContext] Failed to open deal inquiry thread:', error);
+      throw error;
+    }
+  }, [loadConversations, selectConversation, openPanel]);
+
   // Poll for updates
   const pollForUpdates = useCallback(async () => {
     try {
@@ -519,6 +556,7 @@ export function ChatProvider({ children }) {
     selectConversation,
     createConversation,
     joinConversation,
+    openDealInquiryThread,
     isLoadingConversations,
 
     // Messages

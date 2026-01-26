@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Net Listing Agreement</title>
+  <style>
+    body { font-family: 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; max-width: 8.5in; margin: 0 auto; padding: 1in; }
+    .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 25px; }
+    .header h1 { font-size: 16pt; margin: 0; text-transform: uppercase; }
+    .section { margin-bottom: 20px; }
+    .section-title { font-weight: bold; text-decoration: underline; margin-bottom: 10px; }
+    .field { margin-bottom: 8px; }
+    .field-label { font-weight: bold; }
+    .signature-line { border-bottom: 1px solid #333; min-width: 200px; display: inline-block; margin: 0 10px; }
+    .warning { background-color: #ffcccc; padding: 15px; border: 2px solid #cc0000; margin: 15px 0; }
+    .highlight { background-color: #ffffcc; padding: 10px; border: 1px solid #ccc; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Net Listing Agreement</h1>
+    <p>Commercial Real Estate Listing</p>
+  </div>
+
+  <div class="warning">
+    <strong>IMPORTANT DISCLOSURE:</strong> This is a NET LISTING agreement. The Broker's compensation will be the amount by which the sale price exceeds the net amount specified below. Net listings may be prohibited or restricted in some jurisdictions. Both parties should consult with legal counsel before entering into this agreement. Seller acknowledges understanding that Broker has an incentive to sell at the highest possible price, and this creates a potential conflict of interest.
+  </div>
+
+  <div class="section">
+    <p><strong>THIS AGREEMENT</strong> is entered into as of <strong>{{EFFECTIVE_DATE}}</strong> between:</p>
+    <div class="field">
+      <span class="field-label">SELLER:</span> {{SELLER_NAME}} ("Seller")
+    </div>
+    <div class="field">
+      <span class="field-label">BROKER:</span> {{BROKER_NAME}} ("Broker")
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">1. PROPERTY</div>
+    <p>Seller authorizes Broker to market and offer for sale:</p>
+    <div class="field">
+      <span class="field-label">Property Address:</span> {{PROPERTY_ADDRESS}}
+    </div>
+    <div class="field">
+      <span class="field-label">Property Type:</span> {{PROPERTY_TYPE}}
+    </div>
+    <div class="field">
+      <span class="field-label">Legal Description:</span> {{LEGAL_DESCRIPTION}}
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">2. NET AMOUNT TO SELLER</div>
+    <div class="highlight">
+      <p>Seller desires to receive a <strong>NET AMOUNT</strong> of:</p>
+      <div class="field">
+        <span class="field-label">Net to Seller:</span> <strong>{{NET_AMOUNT}}</strong>
+      </div>
+      <p>This net amount represents the minimum proceeds Seller wishes to receive from the sale, after payment of Broker's commission but before other closing costs, prorations, and adjustments.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">3. BROKER'S COMPENSATION</div>
+    <p>Broker's compensation shall be calculated as follows:</p>
+    <p><strong>Commission = Sale Price - Net Amount to Seller ({{NET_AMOUNT}})</strong></p>
+    <p>For example:</p>
+    <ul>
+      <li>If Property sells for {{EXAMPLE_PRICE_HIGH}}, Broker receives {{EXAMPLE_COMMISSION_HIGH}}</li>
+      <li>If Property sells for {{EXAMPLE_PRICE_LOW}}, Broker receives {{EXAMPLE_COMMISSION_LOW}}</li>
+      <li>If Property sells for {{NET_AMOUNT}} or less, Broker receives $0</li>
+    </ul>
+    <p><strong>Minimum Commission:</strong> Notwithstanding the above, if Broker procures a ready, willing, and able buyer at or above the Net Amount, Broker shall receive a minimum commission of {{MINIMUM_COMMISSION}}.</p>
+    <p><strong>Maximum Commission Cap:</strong> {{MAX_COMMISSION_CAP}}</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">4. TERM</div>
+    <p>This Agreement shall commence on <strong>{{START_DATE}}</strong> and expire on <strong>{{END_DATE}}</strong>.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">5. LISTING TERMS</div>
+    <p>Broker is authorized to market the Property with:</p>
+    <div class="field">
+      <span class="field-label">Initial Asking Price:</span> {{ASKING_PRICE}}
+    </div>
+    <p>Broker may adjust the asking price with Seller's prior written approval.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">6. SELLER'S ACKNOWLEDGMENTS</div>
+    <p>Seller acknowledges and understands that:</p>
+    <ul>
+      <li>Broker's compensation increases as the sale price increases above the Net Amount;</li>
+      <li>This arrangement creates an incentive for Broker to achieve the highest possible sale price;</li>
+      <li>Seller has the right to accept or reject any offer;</li>
+      <li>Seller has been advised to seek independent legal counsel;</li>
+      <li>Net listings may be prohibited or restricted in certain jurisdictions;</li>
+      <li>Seller has had adequate time to consider this agreement.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">7. BROKER'S DUTIES</div>
+    <p>Broker agrees to:</p>
+    <ul>
+      <li>Market the Property professionally and in good faith;</li>
+      <li>Disclose all offers to Seller promptly;</li>
+      <li>Act in Seller's best interest despite the net listing arrangement;</li>
+      <li>Provide Seller with a written calculation of commission before closing;</li>
+      <li>Comply with all applicable real estate laws and regulations.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">8. DISCLOSURE OF NET LISTING</div>
+    <p>Broker shall disclose the existence of this net listing arrangement to all prospective buyers and their agents prior to presenting any offer.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">9. PROTECTION PERIOD</div>
+    <p>If, within <strong>{{PROTECTION_DAYS}}</strong> days after expiration of this Agreement, Seller enters into a contract to sell the Property to any buyer introduced by Broker during the Term, the commission provisions above shall apply.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">10. TERMINATION</div>
+    <p>Either party may terminate this Agreement upon <strong>{{TERMINATION_NOTICE_DAYS}}</strong> days written notice. Termination does not affect the Protection Period provisions.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">11. LEGAL COMPLIANCE</div>
+    <p>Both parties acknowledge that net listings may be subject to additional regulatory requirements or restrictions. If any provision of this Agreement violates applicable law, that provision shall be modified to comply with the law while preserving the parties' intent to the extent possible.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">12. SIGNATURES</div>
+    <p>By signing below, both parties acknowledge they have read, understand, and agree to all terms of this Net Listing Agreement.</p>
+    <br>
+    <div>
+      <strong>SELLER:</strong><br><br>
+      Signature: <span class="signature-line"></span> Date: <span class="signature-line"></span>
+      <br>Print Name: {{SELLER_NAME}}
+      <br><br>
+      <em>Seller Initial Acknowledgment of Net Listing Terms: ______</em>
+    </div>
+    <br><br>
+    <div>
+      <strong>BROKER:</strong><br><br>
+      Signature: <span class="signature-line"></span> Date: <span class="signature-line"></span>
+      <br>Print Name: {{BROKER_NAME}}
+      <br>License #: {{BROKER_LICENSE}}
+    </div>
+  </div>
+</body>
+</html>

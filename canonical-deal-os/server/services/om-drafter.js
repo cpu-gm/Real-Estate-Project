@@ -145,18 +145,64 @@ class OMDrafterService {
 
     log('info', 'Starting OM draft generation', { dealDraftId, regenerate });
 
-    // Get deal draft with claims
+    // Fast-path: Check for existing draft OM first (optimization)
+    if (!regenerate) {
+      const existingDraftOM = await prisma.omVersion.findFirst({
+        where: {
+          dealDraftId,
+          status: OM_STATUSES.DRAFT
+        },
+        select: { id: true, status: true, versionNumber: true, createdAt: true, updatedAt: true }
+      });
+
+      if (existingDraftOM) {
+        log('info', 'Returning existing draft OM (fast path)', { omVersionId: existingDraftOM.id });
+        return this.formatOMVersion(existingDraftOM);
+      }
+    }
+
+    // Get deal draft with optimized selective loading
     const dealDraft = await prisma.dealDraft.findUnique({
       where: { id: dealDraftId },
       include: {
         claims: {
           where: { status: { in: ['UNVERIFIED', 'BROKER_CONFIRMED', 'SELLER_CONFIRMED'] } },
-          orderBy: { confidence: 'desc' }
+          orderBy: { confidence: 'desc' },
+          take: 200  // Limit to top 200 claims for performance
         },
-        documents: true,
-        brokers: { where: { isPrimaryContact: true } },
-        seller: true,
+        documents: {
+          select: {
+            id: true,
+            fileName: true,
+            fileType: true,
+            fileSize: true,
+            uploadedAt: true,
+            dealDraftId: true
+            // Don't load fileData or extractedText blobs unless needed
+          }
+        },
+        brokers: {
+          where: { isPrimaryContact: true },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+            company: true,
+            isPrimaryContact: true
+          }
+        },
+        seller: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+            organizationId: true
+          }
+        },
         omVersions: {
+          select: { id: true, status: true, versionNumber: true },
           orderBy: { versionNumber: 'desc' },
           take: 1
         }
@@ -174,15 +220,6 @@ class OMDrafterService {
       documentCount: dealDraft.documents.length,
       hasExistingOM: dealDraft.omVersions.length > 0
     });
-
-    // Check for existing draft
-    if (dealDraft.omVersions.length > 0 && !regenerate) {
-      const existingOM = dealDraft.omVersions[0];
-      if (existingOM.status === OM_STATUSES.DRAFT) {
-        log('info', 'Returning existing draft OM', { omVersionId: existingOM.id });
-        return this.formatOMVersion(existingOM);
-      }
-    }
 
     // Build claim map for quick lookup
     const claimMap = this.buildClaimMap(dealDraft.claims);

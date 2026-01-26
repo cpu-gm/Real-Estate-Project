@@ -110,8 +110,10 @@ function sendKernelUnavailable(res, error) {
  * Send LP invitation to join a deal
  * POST /api/lp/invitations
  * Body: { lpEntityName, lpEmail, dealId, commitment, ownershipPct, shareClassId? }
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleSendInvitation(req, res, readJsonBody, kernelBaseUrl, resolveUserId) {
+export async function handleSendInvitation(req, res, readJsonBody, kernelBaseUrl, authUser) {
   log(`POST /lp/invitations`);
 
   const body = await readJsonBody(req);
@@ -122,7 +124,7 @@ export async function handleSendInvitation(req, res, readJsonBody, kernelBaseUrl
   }
 
   const prisma = getPrisma();
-  const userId = resolveUserId(req);
+  const userId = authUser.id;  // T1.3: Use validated JWT identity
   const dealId = parsed.data.dealId;
   const shareClassId = body?.shareClassId || null;
 
@@ -309,7 +311,7 @@ export async function handleAcceptInvitation(req, res, invitationId, readJsonBod
     body: JSON.stringify({
       name: invitation.lpEntityName,
       type: "HUMAN",
-      roles: ["LP"]
+      role: "LP"
     })
   }).catch((error) => {
     logError(`Kernel actor creation failed`, error, { dealId: invitation.dealId });
@@ -795,13 +797,56 @@ export async function handleListLPActors(req, res, dealId, kernelBaseUrl) {
 }
 
 /**
+ * List ALL LP actors across all deals for GP's organization
+ * GET /api/lp/actors (no dealId - returns all investors in org)
+ */
+export async function handleListAllLPActors(req, res, authUser) {
+  if (!authUser) {
+    sendError(res, 401, "Not authenticated");
+    return;
+  }
+
+  const prisma = getPrisma();
+
+  try {
+    // Get all LP actors for deals in the user's organization
+    const lpActors = await prisma.lPActor.findMany({
+      where: {
+        organizationId: authUser.organizationId,
+        status: 'ACTIVE'
+      },
+      orderBy: { entityName: 'asc' }
+    });
+
+    const response = lpActors.map((la) => ({
+      id: la.id,
+      dealId: la.dealId,
+      entityName: la.entityName,
+      email: la.email,
+      actorId: la.actorId,
+      commitment: la.commitment,
+      ownershipPct: la.ownershipPct,
+      status: la.status,
+      createdAt: la.createdAt?.toISOString() ?? null
+    }));
+
+    sendJson(res, 200, { investors: response });
+  } catch (error) {
+    logError('Failed to list all LP actors', error);
+    sendError(res, 500, "Failed to get investors");
+  }
+}
+
+/**
  * Bulk import LP invitations from CSV
  * POST /api/lp/bulk-import
  * Body: { dealId, investors: [{ lpEntityName, lpEmail, commitment, ownershipPct }, ...] }
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleBulkLPImport(req, res, readJsonBody, kernelBaseUrl, resolveUserId) {
+export async function handleBulkLPImport(req, res, readJsonBody, kernelBaseUrl, authUser) {
   const body = await readJsonBody(req);
-  
+
   if (!body?.dealId || typeof body.dealId !== "string") {
     return sendError(res, 400, "dealId is required");
   }
@@ -816,7 +861,7 @@ export async function handleBulkLPImport(req, res, readJsonBody, kernelBaseUrl, 
 
   const prisma = getPrisma();
   const dealId = body.dealId;
-  const userId = resolveUserId(req);
+  const userId = authUser.id;  // T1.3: Use validated JWT identity
 
   // Verify deal exists
   try {
@@ -976,8 +1021,11 @@ export async function handleBulkLPImport(req, res, readJsonBody, kernelBaseUrl, 
  * Generate custom LP report with filters
  * POST /api/lp/reports/generate
  * Body: { dealId, reportType, filters: { startDate, endDate, lpEmails } }
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT (for audit trail)
  */
-export async function handleGenerateCustomReport(req, res, readJsonBody, kernelBaseUrl, resolveUserId) {
+export async function handleGenerateCustomReport(req, res, readJsonBody, kernelBaseUrl, authUser) {
+  // authUser available for audit logging if needed
   const body = await readJsonBody(req);
 
   if (!body?.dealId || typeof body.dealId !== "string") {

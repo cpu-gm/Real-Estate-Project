@@ -16,6 +16,7 @@ import { calculateWaterfall, createDefaultStructure, formatWaterfallForDisplay, 
 import { calculateSensitivityMatrix, getCellColor, calculateHoldPeriodSensitivity, calculateQuickSensitivity, getSensitivityOptions, createScenarioFromCell, DEFAULT_RANGES, OUTPUT_METRICS } from '../services/sensitivity-calculator.js';
 import { getAllSectors, getSectorConfig, detectSector, getSectorRequiredInputs, getSectorAllInputs, getSectorBenchmarks, getSectorRiskFactors, getSectorPrimaryMetrics, validateAgainstBenchmark } from '../services/sector-config.js';
 import { calculateSectorMetrics } from '../services/underwriting-calculator.js';
+import { getLPPositionsForWaterfall } from '../services/lp-position-service.js';
 
 import { detectAllConflicts, getConflictSummary, SEVERITY, CONFLICT_TYPE } from '../services/conflict-detector.js';
 import { generateMemo, generateQuickSummary } from '../services/memo-generator.js';
@@ -1700,15 +1701,9 @@ export async function handleCalculateWaterfall(req, res, dealId) {
       console.log(`[Waterfall] Per-class mode enabled, found ${lpActors.length} LP actors`);
 
       if (lpActors.length > 0) {
-        // Transform LP actors to the format expected by groupLPsByClassPriority
-        const lpOwnership = lpActors.map(lp => ({
-          lpActorId: lp.id,
-          entityName: lp.entityName,
-          ownershipPct: lp.ownershipPct || 0,
-          commitment: lp.commitment || 0,
-          capitalContributed: lp.capitalContributed || 0,
-          shareClass: lp.shareClass
-        }));
+        // FIXED: Use LP Position Service to get ACTUAL capitalContributed
+        // Previously used lp.capitalContributed which was undefined (field doesn't exist in schema)
+        const lpOwnership = await getLPPositionsForWaterfall(dealId);
 
         // Group LPs by class priority
         const perClassConfig = groupLPsByClassPriority(lpOwnership);
@@ -2248,8 +2243,16 @@ export async function handleCreateScenarioFromSensitivity(req, res, dealId, auth
 /**
  * GET /api/sectors
  * Get all available property sectors
+ *
+ * SECURITY: Requires authentication
  */
 export async function handleGetAllSectors(req, res) {
+  // SECURITY: Require authentication
+  const authUser = await extractAuthUser(req);
+  if (!authUser) {
+    return sendJson(res, 401, { error: 'Authentication required' });
+  }
+
   try {
     const sectors = getAllSectors();
     return sendJson(res, 200, { sectors });

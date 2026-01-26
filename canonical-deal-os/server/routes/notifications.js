@@ -1,4 +1,18 @@
 import { getPrisma } from "../db.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+import {
+  CreateTaskSchema,
+  UpdateTaskSchema,
+  SnoozeNotificationSchema,
+  DismissNotificationSchema,
+  UpdateNotificationPreferencesSchema
+} from "../middleware/route-schemas.js";
+
+/**
+ * T1.3 (P1 Security Sprint): All handlers migrated from resolveUserId to authUser
+ * - authUser is validated JWT identity passed from dispatch layer
+ * - Use authUser.id instead of resolveUserId(req) to prevent IDOR attacks
+ */
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -12,9 +26,12 @@ function sendError(res, status, message, details) {
   sendJson(res, status, { message, details: details ?? null });
 }
 
-// GET /api/notifications
-export async function handleListNotifications(req, res, resolveUserId) {
-  const userId = resolveUserId(req);
+/**
+ * GET /api/notifications
+ * T1.3: Uses authUser from validated JWT
+ */
+export async function handleListNotifications(req, res, authUser) {
+  const userId = authUser.id;
   const url = new URL(req.url, "http://localhost");
   const unreadOnly = url.searchParams.get("unreadOnly") === "true";
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 100);
@@ -59,9 +76,12 @@ export async function handleListNotifications(req, res, resolveUserId) {
   }
 }
 
-// PATCH /api/notifications/:id/read
-export async function handleMarkNotificationRead(req, res, notificationId, resolveUserId) {
-  const userId = resolveUserId(req);
+/**
+ * PATCH /api/notifications/:id/read
+ * T1.3: Uses authUser from validated JWT
+ */
+export async function handleMarkNotificationRead(req, res, notificationId, authUser) {
+  const userId = authUser.id;
   const prisma = getPrisma();
 
   try {
@@ -85,9 +105,12 @@ export async function handleMarkNotificationRead(req, res, notificationId, resol
   }
 }
 
-// PATCH /api/notifications/read-all
-export async function handleMarkAllNotificationsRead(req, res, resolveUserId) {
-  const userId = resolveUserId(req);
+/**
+ * PATCH /api/notifications/read-all
+ * T1.3: Uses authUser from validated JWT
+ */
+export async function handleMarkAllNotificationsRead(req, res, authUser) {
+  const userId = authUser.id;
   const prisma = getPrisma();
 
   try {
@@ -103,10 +126,13 @@ export async function handleMarkAllNotificationsRead(req, res, resolveUserId) {
   }
 }
 
-// GET /api/activity-feed
-export async function handleGetActivityFeed(req, res, resolveUserId, resolveUserRole) {
-  const userId = resolveUserId(req);
-  const userRole = resolveUserRole(req);
+/**
+ * GET /api/activity-feed
+ * T1.3: Uses authUser from validated JWT
+ */
+export async function handleGetActivityFeed(req, res, authUser) {
+  const userId = authUser.id;
+  const userRole = authUser.role;
   const url = new URL(req.url, "http://localhost");
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10), 50);
   const dealId = url.searchParams.get("dealId");
@@ -218,10 +244,13 @@ export async function handleGetActivityFeed(req, res, resolveUserId, resolveUser
   }
 }
 
-// POST /api/tasks
-export async function handleCreateTask(req, res, resolveUserId, readJsonBody) {
-  const userId = resolveUserId(req);
-  const userName = req.headers["x-user-name"] ?? "Anonymous";
+/**
+ * POST /api/tasks
+ * T1.3: Uses authUser from validated JWT
+ */
+export async function handleCreateTask(req, res, authUser, readJsonBody) {
+  const userId = authUser.id;
+  const userName = authUser.name ?? "Anonymous";
   const prisma = getPrisma();
 
   let body;
@@ -231,11 +260,27 @@ export async function handleCreateTask(req, res, resolveUserId, readJsonBody) {
     return sendError(res, 400, "Invalid request body");
   }
 
-  const { title, description, assigneeId, assigneeName, dealId, conversationId, sourceMessageId, priority, dueDate } = body;
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleCreateTask');
+  validationLog.beforeValidation(body);
 
-  if (!title || title.trim().length === 0) {
-    return sendError(res, 400, "Task title is required");
+  const parsed = CreateTaskSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { title, description, assigneeId, assigneeName, dealId, conversationId, sourceMessageId, priority, dueDate } = parsed.data;
 
   try {
     const task = await prisma.chatTask.create({
@@ -305,9 +350,12 @@ export async function handleCreateTask(req, res, resolveUserId, readJsonBody) {
   }
 }
 
-// GET /api/tasks
-export async function handleListTasks(req, res, resolveUserId) {
-  const userId = resolveUserId(req);
+/**
+ * GET /api/tasks
+ * T1.3: Uses authUser from validated JWT
+ */
+export async function handleListTasks(req, res, authUser) {
+  const userId = authUser.id;
   const url = new URL(req.url, "http://localhost");
   const status = url.searchParams.get("status");
   const dealId = url.searchParams.get("dealId");
@@ -383,10 +431,13 @@ export async function handleListTasks(req, res, resolveUserId) {
   }
 }
 
-// PATCH /api/tasks/:id
-export async function handleUpdateTask(req, res, taskId, resolveUserId, readJsonBody) {
-  const userId = resolveUserId(req);
-  const userName = req.headers["x-user-name"] ?? "Anonymous";
+/**
+ * PATCH /api/tasks/:id
+ * T1.3: Uses authUser from validated JWT
+ */
+export async function handleUpdateTask(req, res, taskId, authUser, readJsonBody) {
+  const userId = authUser.id;
+  const userName = authUser.name ?? "Anonymous";
   const prisma = getPrisma();
 
   let body;
@@ -395,6 +446,26 @@ export async function handleUpdateTask(req, res, taskId, resolveUserId, readJson
   } catch {
     return sendError(res, 400, "Invalid request body");
   }
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleUpdateTask');
+  validationLog.beforeValidation(body);
+
+  const parsed = UpdateTaskSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
 
   try {
     const task = await prisma.chatTask.findUnique({ where: { id: taskId } });
@@ -409,23 +480,23 @@ export async function handleUpdateTask(req, res, taskId, resolveUserId, readJson
     }
 
     const updateData = {};
-    if (body.title !== undefined) updateData.title = body.title.trim();
-    if (body.description !== undefined) updateData.description = body.description?.trim() || null;
-    if (body.status !== undefined) {
-      updateData.status = body.status;
-      if (body.status === "DONE") {
+    if (parsed.data.title !== undefined) updateData.title = parsed.data.title.trim();
+    if (parsed.data.description !== undefined) updateData.description = parsed.data.description?.trim() || null;
+    if (parsed.data.status !== undefined) {
+      updateData.status = parsed.data.status;
+      if (parsed.data.status === "DONE") {
         updateData.completedAt = new Date();
       } else {
         updateData.completedAt = null;
       }
     }
-    if (body.priority !== undefined) updateData.priority = body.priority;
-    if (body.assigneeId !== undefined) {
-      updateData.assigneeId = body.assigneeId;
-      updateData.assigneeName = body.assigneeName || null;
+    if (parsed.data.priority !== undefined) updateData.priority = parsed.data.priority;
+    if (parsed.data.assigneeId !== undefined) {
+      updateData.assigneeId = parsed.data.assigneeId;
+      updateData.assigneeName = parsed.data.assigneeName || null;
     }
-    if (body.dueDate !== undefined) {
-      updateData.dueDate = body.dueDate ? new Date(body.dueDate) : null;
+    if (parsed.data.dueDate !== undefined) {
+      updateData.dueDate = parsed.data.dueDate ? new Date(parsed.data.dueDate) : null;
     }
 
     const updatedTask = await prisma.chatTask.update({
@@ -434,10 +505,10 @@ export async function handleUpdateTask(req, res, taskId, resolveUserId, readJson
     });
 
     // Notify assignee if assignment changed
-    if (body.assigneeId && body.assigneeId !== task.assigneeId && body.assigneeId !== userId) {
+    if (parsed.data.assigneeId && parsed.data.assigneeId !== task.assigneeId && parsed.data.assigneeId !== userId) {
       await prisma.notification.create({
         data: {
-          userId: body.assigneeId,
+          userId: parsed.data.assigneeId,
           type: "task_assigned",
           title: `Task assigned to you: ${updatedTask.title}`,
           body: updatedTask.description?.substring(0, 200) || null,
@@ -509,14 +580,36 @@ const MAX_SNOOZE_DAYS = 30;
  * Snooze a notification
  * PATCH /api/notifications/:id/snooze
  * Body: { duration: "1h" | "3h" | "1d" | "3d" | "1w" | "custom", until?: ISO date string }
+ * T1.3: Uses authUser from validated JWT
  */
-export async function handleSnoozeNotification(req, res, notificationId, resolveUserId, readJsonBody) {
+export async function handleSnoozeNotification(req, res, notificationId, authUser, readJsonBody) {
   const prisma = getPrisma();
 
   try {
-    const userId = resolveUserId(req);
+    const userId = authUser.id;
     const body = await readJsonBody(req);
-    const { duration, until } = body;
+
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleSnoozeNotification');
+    validationLog.beforeValidation(body);
+
+    const parsed = SnoozeNotificationSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { duration, until } = parsed.data;
 
     // Find notification
     const notification = await prisma.notification.findUnique({
@@ -590,14 +683,36 @@ export async function handleSnoozeNotification(req, res, notificationId, resolve
  * Dismiss a notification (mark as read with reason)
  * PATCH /api/notifications/:id/dismiss
  * Body: { reason?: "completed" | "not_relevant" | "other" }
+ * T1.3: Uses authUser from validated JWT
  */
-export async function handleDismissNotification(req, res, notificationId, resolveUserId, readJsonBody) {
+export async function handleDismissNotification(req, res, notificationId, authUser, readJsonBody) {
   const prisma = getPrisma();
 
   try {
-    const userId = resolveUserId(req);
+    const userId = authUser.id;
     const body = await readJsonBody(req);
-    const { reason } = body;
+
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleDismissNotification');
+    validationLog.beforeValidation(body);
+
+    const parsed = DismissNotificationSchema.safeParse(body || {});
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { reason } = parsed.data;
 
     // Find notification
     const notification = await prisma.notification.findUnique({
@@ -639,12 +754,13 @@ export async function handleDismissNotification(req, res, notificationId, resolv
 /**
  * Get user's notification preferences
  * GET /api/notification-preferences
+ * T1.3: Uses authUser from validated JWT
  */
-export async function handleGetNotificationPreferences(req, res, resolveUserId) {
+export async function handleGetNotificationPreferences(req, res, authUser) {
   const prisma = getPrisma();
 
   try {
-    const userId = resolveUserId(req);
+    const userId = authUser.id;
 
     let prefs = await prisma.notificationPreference.findUnique({
       where: { userId }
@@ -681,13 +797,34 @@ export async function handleGetNotificationPreferences(req, res, resolveUserId) 
  * Update user's notification preferences
  * PATCH /api/notification-preferences
  * Body: { emailEnabled?, inAppEnabled?, reminderDays?, escalateAfterDays?, quietStart?, quietEnd? }
+ * T1.3: Uses authUser from validated JWT
  */
-export async function handleUpdateNotificationPreferences(req, res, resolveUserId, readJsonBody) {
+export async function handleUpdateNotificationPreferences(req, res, authUser, readJsonBody) {
   const prisma = getPrisma();
 
   try {
-    const userId = resolveUserId(req);
+    const userId = authUser.id;
     const body = await readJsonBody(req);
+
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleUpdateNotificationPreferences');
+    validationLog.beforeValidation(body);
+
+    const parsed = UpdateNotificationPreferencesSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
 
     const {
       emailEnabled,
@@ -696,7 +833,7 @@ export async function handleUpdateNotificationPreferences(req, res, resolveUserI
       escalateAfterDays,
       quietStart,
       quietEnd
-    } = body;
+    } = parsed.data;
 
     // Build update data
     const updateData = {};
@@ -708,33 +845,15 @@ export async function handleUpdateNotificationPreferences(req, res, resolveUserI
       updateData.inAppEnabled = inAppEnabled;
     }
     if (Array.isArray(reminderDays)) {
-      // Validate reminder days are positive integers
-      if (!reminderDays.every(d => Number.isInteger(d) && d > 0 && d <= 30)) {
-        sendError(res, 400, "Reminder days must be positive integers <= 30");
-        return;
-      }
       updateData.reminderDays = JSON.stringify(reminderDays);
     }
     if (typeof escalateAfterDays === "number") {
-      if (escalateAfterDays < 1 || escalateAfterDays > 30) {
-        sendError(res, 400, "Escalate after days must be between 1 and 30");
-        return;
-      }
       updateData.escalateAfterDays = escalateAfterDays;
     }
     if (quietStart !== undefined) {
-      // Validate time format HH:MM (00-23 for hours, 00-59 for minutes)
-      if (quietStart && !/^([01]\d|2[0-3]):[0-5]\d$/.test(quietStart)) {
-        sendError(res, 400, "Quiet start must be in HH:MM format (00:00-23:59)");
-        return;
-      }
       updateData.quietStart = quietStart || null;
     }
     if (quietEnd !== undefined) {
-      if (quietEnd && !/^([01]\d|2[0-3]):[0-5]\d$/.test(quietEnd)) {
-        sendError(res, 400, "Quiet end must be in HH:MM format (00:00-23:59)");
-        return;
-      }
       updateData.quietEnd = quietEnd || null;
     }
 

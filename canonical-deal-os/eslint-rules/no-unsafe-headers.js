@@ -15,7 +15,8 @@ const UNSAFE_HEADERS = [
 
 const UNSAFE_FUNCTIONS = [
   'resolveActorRole',
-  'resolveDebugUserId'
+  'resolveDebugUserId',
+  'resolveUserId'  // T1.3: SECURITY - Use authUser.id from validated JWT instead
 ];
 
 export default {
@@ -28,8 +29,9 @@ export default {
     },
     messages: {
       unsafeHeader: 'SECURITY: Do not use "{{header}}" header for authorization. Use authUser from validated JWT instead.',
-      unsafeFunction: 'SECURITY: Do not use "{{func}}" for authorization. Use authUser.role from validated JWT instead.',
-      headerAccess: 'SECURITY: Accessing req.headers["{{header}}"] is unsafe for authorization. Use authUser from validated JWT.'
+      unsafeFunction: 'SECURITY: Do not use "{{func}}" for authorization. Use authUser.id or authUser.role from validated JWT instead.',
+      headerAccess: 'SECURITY: Accessing req.headers["{{header}}"] is unsafe for authorization. Use authUser from validated JWT.',
+      resolveUserIdDeprecated: 'SECURITY (T1.3): resolveUserId() trusts X-User-Id header which can be spoofed. Use authUser.id from validated JWT instead.'
     },
     schema: []
   },
@@ -56,15 +58,20 @@ export default {
         }
       },
 
-      // Catch: resolveActorRole(req) calls
+      // Catch: resolveActorRole(req), resolveUserId(req) calls
       CallExpression(node) {
         if (
           node.callee?.type === 'Identifier' &&
           UNSAFE_FUNCTIONS.includes(node.callee.name)
         ) {
+          // Provide more specific error for resolveUserId
+          const messageId = node.callee.name === 'resolveUserId'
+            ? 'resolveUserIdDeprecated'
+            : 'unsafeFunction';
+
           context.report({
             node,
-            messageId: 'unsafeFunction',
+            messageId,
             data: { func: node.callee.name }
           });
         }

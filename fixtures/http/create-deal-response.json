@@ -1,4 +1,9 @@
 {
+  "_meta": {
+    "source": "POST /api/deals (response)",
+    "schema": "dealSchema",
+    "createdAt": "2026-01-21"
+  },
   "_comment": "Response after creating a deal - validates against dealSchema",
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "_id_comment": "UUID assigned by kernel",

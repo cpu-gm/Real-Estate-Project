@@ -1,0 +1,14 @@
+{
+  "testSuite": "idempotency-integration",
+  "completed": "2026-01-26T14:27:09.971Z",
+  "totalDuration": "1ms",
+  "entries": 2,
+  "byLevel": {
+    "DEBUG": 0,
+    "INFO": 2,
+    "WARN": 0,
+    "ERROR": 0,
+    "CRITICAL": 0
+  },
+  "errors": []
+}

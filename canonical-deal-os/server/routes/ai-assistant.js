@@ -24,6 +24,21 @@ import {
   AI_FEATURES,
   CONSENT_CONFIG
 } from "../services/ai-consent.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+import {
+  AskAISchema,
+  ExtractDocumentSchema,
+  SynthesizeDocumentsSchema,
+  AIResolveConflictSchema,
+  DismissConflictSchema,
+  VerifyFieldSchema,
+  MarkNeedsReviewSchema,
+  TrackLineageSchema,
+  BulkVerifySchema,
+  CreateAssumptionSnapshotSchema,
+  CompareAssumptionsSchema,
+  GetAssumptionSuggestionsSchema
+} from "../middleware/route-schemas.js";
 
 // Phase 2: Document Intelligence
 import {
@@ -590,9 +605,10 @@ function formatCurrency(amount) {
 }
 
 // POST /api/ai-assistant/ask
-export async function handleAskAI(req, res, kernelBaseUrl, resolveUserId, resolveUserRole) {
-  const userId = resolveUserId(req);
-  const userRole = resolveUserRole(req);
+// T1.3 (P1 Security Sprint): Uses authUser from validated JWT
+export async function handleAskAI(req, res, kernelBaseUrl, authUser) {
+  const userId = authUser?.id;  // T1.3: Use validated JWT identity
+  const userRole = authUser?.role;
 
   let body;
   try {
@@ -656,8 +672,9 @@ export async function handleAskAI(req, res, kernelBaseUrl, resolveUserId, resolv
 }
 
 // GET /api/ai-assistant/suggestions
-export async function handleGetSuggestions(req, res, resolveUserId, resolveUserRole) {
-  const userRole = resolveUserRole(req);
+// T1.3 (P1 Security Sprint): Uses authUser from validated JWT
+export async function handleGetSuggestions(req, res, authUser) {
+  const userRole = authUser?.role;  // T1.3: Use validated JWT identity
 
   const suggestions = [
     { text: "How many deals do we have?", category: "deals" },
@@ -690,12 +707,14 @@ export async function handleGetSuggestions(req, res, resolveUserId, resolveUserR
  *
  * SECURITY: Uses filtered context based on user's role and entitlements.
  * The LLM only sees data the authenticated user is authorized to access.
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleDealChat(req, res, dealId, resolveUserId, resolveUserRole, authUser) {
+export async function handleDealChat(req, res, dealId, authUser) {
   const prisma = getPrisma();
-  const userId = resolveUserId(req);
-  const userRole = authUser?.role || resolveUserRole(req);
-  const userName = req.headers['x-user-name'] || authUser?.name || 'User';
+  const userId = authUser?.id;  // T1.3: Use validated JWT identity
+  const userRole = authUser?.role;
+  const userName = authUser?.name || 'User';
 
   console.log(`[AI-HANDLER] handleDealChat called - Deal: ${dealId}, User: ${authUser?.id}, Role: ${authUser?.role}`);
 
@@ -921,10 +940,12 @@ export async function handleDealChat(req, res, dealId, resolveUserId, resolveUse
 /**
  * GET /api/deals/:dealId/chat/history
  * Get chat history for a deal
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleGetDealChatHistory(req, res, dealId, resolveUserId) {
+export async function handleGetDealChatHistory(req, res, dealId, authUser) {
   const prisma = getPrisma();
-  const userId = resolveUserId(req);
+  const userId = authUser?.id;  // T1.3: Use validated JWT identity
 
   if (!dealId) {
     return sendError(res, 400, "Deal ID is required");
@@ -1117,10 +1138,11 @@ export async function handleGetDealContext(req, res, dealId, authUser) {
  * Generate an AI executive summary of the deal
  *
  * SECURITY: Uses filtered context based on user's role.
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleDealSummarize(req, res, dealId, resolveUserId, authUser) {
+export async function handleDealSummarize(req, res, dealId, authUser) {
   const prisma = getPrisma();
-  const userId = resolveUserId(req);
+  const userId = authUser?.id;  // T1.3: Use validated JWT identity
 
   console.log(`[AI-HANDLER] handleDealSummarize called - Deal: ${dealId}, User: ${authUser?.id}, Role: ${authUser?.role}`);
 
@@ -1458,10 +1480,12 @@ function formatCurrencyFull(amount) {
  * - Executive Summary
  * - Provenance Report
  * - All uploaded documents
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleExportPackage(req, res, dealId, resolveUserId) {
+export async function handleExportPackage(req, res, dealId, authUser) {
   const prisma = getPrisma();
-  const userId = resolveUserId(req);
+  const userId = authUser?.id;  // T1.3: Use validated JWT identity
 
   if (!dealId) {
     return sendError(res, 400, "Deal ID is required");
@@ -1752,11 +1776,28 @@ export async function handleExtractDocument(req, res, dealId, authUser, readJson
 
   try {
     const body = await readJsonBody(req);
-    const { documentId, documentType, options } = body;
 
-    if (!documentId || !documentType) {
-      return sendError(res, 400, "documentId and documentType are required");
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleExtractDocument');
+    validationLog.beforeValidation(body);
+
+    const parsed = ExtractDocumentSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { documentId, documentType, options } = parsed.data;
 
     console.log(`[AI-DOC] Extracting document: docId=${documentId}, type=${documentType}, deal=${dealId}`);
 
@@ -1845,11 +1886,28 @@ export async function handleResolveConflict(req, res, dealId, conflictId, authUs
 
   try {
     const body = await readJsonBody(req);
-    const { resolvedValue, reason } = body;
 
-    if (resolvedValue === undefined) {
-      return sendError(res, 400, "resolvedValue is required");
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleResolveConflict');
+    validationLog.beforeValidation(body);
+
+    const parsed = AIResolveConflictSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { resolvedValue, reason } = parsed.data;
 
     console.log(`[AI-DOC] Resolving conflict: ${conflictId}, value=${resolvedValue}, user=${authUser.id}`);
 
@@ -1873,11 +1931,28 @@ export async function handleDismissConflict(req, res, dealId, conflictId, authUs
 
   try {
     const body = await readJsonBody(req);
-    const { reason } = body;
 
-    if (!reason) {
-      return sendError(res, 400, "reason is required to dismiss a conflict");
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleDismissConflict');
+    validationLog.beforeValidation(body);
+
+    const parsed = DismissConflictSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { reason } = parsed.data;
 
     console.log(`[AI-DOC] Dismissing conflict: ${conflictId}, reason=${reason}, user=${authUser.id}`);
 
@@ -2004,7 +2079,28 @@ export async function handleVerifyField(req, res, dealId, field, authUser, readJ
   try {
     const modelId = url.searchParams.get('modelId') || null;
     const body = await readJsonBody(req);
-    const { notes } = body;
+
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleVerifyField');
+    validationLog.beforeValidation(body);
+
+    const parsed = VerifyFieldSchema.safeParse(body || {});
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { notes } = parsed.data;
 
     console.log(`[AI-VERIFY] Verifying field: dealId=${dealId}, field=${field}, user=${authUser.id}`);
 
@@ -2029,7 +2125,28 @@ export async function handleMarkNeedsReview(req, res, dealId, field, authUser, r
   try {
     const modelId = url.searchParams.get('modelId') || null;
     const body = await readJsonBody(req);
-    const { reason } = body;
+
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleMarkNeedsReview');
+    validationLog.beforeValidation(body);
+
+    const parsed = MarkNeedsReviewSchema.safeParse(body || {});
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { reason } = parsed.data;
 
     console.log(`[AI-VERIFY] Marking for review: dealId=${dealId}, field=${field}`);
 
@@ -2054,11 +2171,28 @@ export async function handleTrackLineage(req, res, dealId, authUser, readJsonBod
   try {
     const modelId = url.searchParams.get('modelId') || null;
     const body = await readJsonBody(req);
-    const { field, sourceInfo } = body;
 
-    if (!field || !sourceInfo) {
-      return sendError(res, 400, "field and sourceInfo are required");
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleTrackLineage');
+    validationLog.beforeValidation(body);
+
+    const parsed = TrackLineageSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { field, sourceInfo } = parsed.data;
 
     console.log(`[AI-VERIFY] Tracking lineage: dealId=${dealId}, field=${field}`);
 
@@ -2083,11 +2217,28 @@ export async function handleBulkVerify(req, res, dealId, authUser, readJsonBody,
   try {
     const modelId = url.searchParams.get('modelId') || null;
     const body = await readJsonBody(req);
-    const { fields, notes } = body;
 
-    if (!Array.isArray(fields) || fields.length === 0) {
-      return sendError(res, 400, "fields array is required");
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleBulkVerify');
+    validationLog.beforeValidation(body);
+
+    const parsed = BulkVerifySchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { fields, notes } = parsed.data;
 
     console.log(`[AI-VERIFY] Bulk verifying: dealId=${dealId}, fields=${fields.length}, user=${authUser.id}`);
 
@@ -2165,11 +2316,28 @@ export async function handleCreateAssumptionSnapshot(req, res, dealId, authUser,
 
   try {
     const body = await readJsonBody(req);
-    const { snapshotType, assumptions, metrics, notes } = body;
 
-    if (!snapshotType || !assumptions) {
-      return sendError(res, 400, "snapshotType and assumptions are required");
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleCreateAssumptionSnapshot');
+    validationLog.beforeValidation(body);
+
+    const parsed = CreateAssumptionSnapshotSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { snapshotType, assumptions, metrics, notes } = parsed.data;
 
     console.log(`[AI-ASSUME] Creating snapshot: dealId=${dealId}, type=${snapshotType}`);
 
@@ -2216,11 +2384,28 @@ export async function handleCompareAssumptions(req, res, dealId, authUser, readJ
 
   try {
     const body = await readJsonBody(req);
-    const { period } = body;
 
-    if (!period) {
-      return sendError(res, 400, "period is required (e.g., 'YEAR_1')");
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleCompareAssumptions');
+    validationLog.beforeValidation(body);
+
+    const parsed = CompareAssumptionsSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { period } = parsed.data;
 
     console.log(`[AI-ASSUME] Comparing assumptions: dealId=${dealId}, period=${period}`);
 
@@ -2294,11 +2479,28 @@ export async function handleGetAssumptionSuggestions(req, res, authUser, readJso
 
   try {
     const body = await readJsonBody(req);
-    const { proposedAssumptions, dealContext } = body;
 
-    if (!proposedAssumptions) {
-      return sendError(res, 400, "proposedAssumptions is required");
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleGetAssumptionSuggestions');
+    validationLog.beforeValidation(body);
+
+    const parsed = GetAssumptionSuggestionsSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { proposedAssumptions, dealContext } = parsed.data;
 
     console.log(`[AI-ASSUME] Getting assumption suggestions: orgId=${authUser.organizationId}`);
 

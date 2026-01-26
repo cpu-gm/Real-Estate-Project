@@ -63,14 +63,26 @@ export const AuthProvider = ({ children }) => {
       return;
     }
 
-    // Priority 2: If Base44 not configured, use demo user
-    if (!isBase44Configured) {
+    // Priority 2: If Base44 not configured AND demo mode explicitly enabled, use demo user
+    // Demo mode must be explicitly opted into via VITE_DEMO_MODE=true
+    const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
+    if (!isBase44Configured && isDemoMode) {
+      console.log('[Auth] Demo mode enabled - using DEMO_USER');
       setUser(DEMO_USER);
       setIsAuthenticated(true);
       setIsLoadingAuth(false);
       setIsLoadingPublicSettings(false);
       setAuthError(null);
       setAppPublicSettings(null);
+      return;
+    }
+
+    // Priority 3: If Base44 not configured and no demo mode, require local auth
+    if (!isBase44Configured) {
+      // No demo mode, no local auth token - user must log in
+      setIsLoadingAuth(false);
+      setIsLoadingPublicSettings(false);
+      setIsAuthenticated(false);
       return;
     }
 
@@ -144,9 +156,15 @@ export const AuthProvider = ({ children }) => {
   };
 
   const checkUserAuth = async () => {
+    // If Base44 not configured, don't set demo user here - already handled in checkAppState
     if (!isBase44Configured) {
-      setUser(DEMO_USER);
-      setIsAuthenticated(true);
+      const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
+      if (isDemoMode) {
+        setUser(DEMO_USER);
+        setIsAuthenticated(true);
+      } else {
+        setIsAuthenticated(false);
+      }
       setIsLoadingAuth(false);
       return;
     }
@@ -201,6 +219,10 @@ export const AuthProvider = ({ children }) => {
 
   // Login with local auth (called after successful API login)
   const login = (userData, token) => {
+    // Persist to localStorage first (ensures bffClient can access token immediately)
+    localStorage.setItem('auth_token', token);
+    localStorage.setItem('auth_user', JSON.stringify(userData));
+    // Then update state
     setUser(userData);
     setAuthToken(token);
     setIsAuthenticated(true);

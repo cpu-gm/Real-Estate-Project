@@ -2,6 +2,8 @@ import { getPrisma } from "../db.js";
 import { kernelRequest } from "../kernel.js";
 import { deleteCacheByPrefix } from "../runtime.js";
 import { invalidateDealCaches } from "./deals.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+import { ProvenanceUpdateSchema } from "../middleware/route-schemas.js";
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -15,13 +17,33 @@ function sendError(res, status, message, details) {
   sendJson(res, status, { message, details: details ?? null });
 }
 
-export async function handleProvenanceUpdate(req, res, dealId, readJsonBody, kernelBaseUrl, resolveUserId) {
+/**
+ * T1.3 (P1 Security Sprint): Removed unused resolveUserId param
+ */
+export async function handleProvenanceUpdate(req, res, dealId, readJsonBody, kernelBaseUrl) {
   const body = await readJsonBody(req);
-  const fieldPath = body?.fieldPath;
-  const artifactId = body?.artifactId ?? null;
-  if (!fieldPath || typeof fieldPath !== "string") {
-    return sendError(res, 400, "Invalid fieldPath");
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleProvenanceUpdate');
+  validationLog.beforeValidation(body);
+
+  const parsed = ProvenanceUpdateSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { fieldPath, artifactId } = parsed.data;
 
   const prisma = getPrisma();
   const latestSession = await prisma.lLMParseSession.findFirst({

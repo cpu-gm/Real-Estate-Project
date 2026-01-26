@@ -25,7 +25,26 @@ import {
   INGEST_SOURCES
 } from '../services/deal-ingest.js';
 import { dealClaimExtractorService } from '../services/deal-claim-extractor.js';
+import { kernelFetchJson } from '../kernel.js';
+import { upsertDealIndex, readStore } from '../store.js';
 import { PrismaClient } from '@prisma/client';
+import { createValidationLogger } from '../services/validation-logger.js';
+import {
+  CreateDraftSchema,
+  PasteTextSchema,
+  UploadDocumentsSchema,
+  AddBrokerSchema,
+  SetSellerSchema,
+  VerifyClaimSchema,
+  ResolveConflictSchema,
+  AdvanceStatusSchema,
+  ConvertToDealSchema,
+  UpdateDraftSchema,
+  CreateListingSchema,
+  CounterOfferSchema,
+  CreateListingConfigSchema,
+  ConfirmAgreementSchema
+} from '../middleware/route-schemas.js';
 
 const prisma = new PrismaClient();
 
@@ -43,6 +62,50 @@ function sendJson(res, status, payload) {
 
 function sendError(res, status, message, details = null) {
   sendJson(res, status, { error: message, details });
+}
+
+/**
+ * Check if user has a pending/accepted broker invitation for a deal
+ * Enables cross-organization broker access to deals they've been invited to
+ */
+async function isInvitedBroker(dealDraftId, userEmail) {
+  if (!userEmail) return false;
+  const invitation = await prisma.brokerInvitation.findFirst({
+    where: {
+      dealDraftId,
+      brokerEmail: userEmail,
+      status: { in: ['PENDING', 'ACCEPTED'] }
+    }
+  });
+  return !!invitation;
+}
+
+/**
+ * Check if user has access to a deal draft
+ * Considers: broker assignment, seller, same-org GP, admin, or broker invitation
+ */
+async function checkDealDraftAccess(dealDraft, authUser) {
+  // Admin always has access
+  if (authUser.role === 'Admin') return true;
+
+  // Assigned broker on this deal
+  const isBroker = dealDraft.brokers?.some(b => b.userId === authUser.id);
+  if (isBroker) return true;
+
+  // Seller of this deal
+  const isSeller = dealDraft.seller?.userId === authUser.id;
+  if (isSeller) return true;
+
+  // GP/GP Analyst in the same organization
+  const isSameOrg = dealDraft.organizationId === authUser.organizationId;
+  const isGPInOrg = isSameOrg && (authUser.role === 'GP' || authUser.role === 'GP Analyst');
+  if (isGPInOrg) return true;
+
+  // Invited broker (cross-org access via BrokerInvitation)
+  const isInvited = await isInvitedBroker(dealDraft.id, authUser.email);
+  if (isInvited) return true;
+
+  return false;
 }
 
 // ============================================================================
@@ -63,12 +126,27 @@ export async function handleCreateDraft(req, res, readJsonBody, authUser) {
     return sendError(res, 400, 'Request body required');
   }
 
-  const { ingestSource, sourceData, seller } = body;
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleCreateDraft');
+  validationLog.beforeValidation(body);
 
-  // Validate ingest source
-  if (!ingestSource || !INGEST_SOURCES.has(ingestSource)) {
-    return sendError(res, 400, `Invalid ingestSource. Valid values: ${[...INGEST_SOURCES].join(', ')}`);
+  const parsed = CreateDraftSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { ingestSource, sourceData, seller, brokerFirm } = parsed.data;
 
   try {
     const dealDraft = await dealIngestService.createDealDraft({
@@ -77,7 +155,7 @@ export async function handleCreateDraft(req, res, readJsonBody, authUser) {
         userId: authUser.id,
         email: authUser.email,
         name: authUser.name,
-        firmName: body.brokerFirm
+        firmName: brokerFirm
       },
       ingestSource,
       sourceData,
@@ -115,6 +193,7 @@ export async function handleListDrafts(req, res, authUser) {
   console.log('[DealIntake] Querying drafts', {
     orgId: authUser.organizationId,
     userId: authUser.id,
+    userEmail: authUser.email,
     status,
     limit,
     offset
@@ -124,6 +203,7 @@ export async function handleListDrafts(req, res, authUser) {
     const result = await dealIngestService.listDealDrafts(authUser.organizationId, {
       status,
       userId: authUser.id, // Show drafts where user is broker OR seller
+      userEmail: authUser.email, // Enable cross-org broker invitation lookup
       limit,
       offset
     });
@@ -141,6 +221,86 @@ export async function handleListDrafts(req, res, authUser) {
 }
 
 /**
+ * List marketplace deals (public listings)
+ * GET /api/intake/deals?listingType=PUBLIC&status=ACTIVE
+ */
+export async function handleListMarketplaceDeals(req, res, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  // Parse query params
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const listingType = url.searchParams.get('listingType') || 'PUBLIC';
+  const status = url.searchParams.get('status') || 'ACTIVE';
+  const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+  const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+
+  console.log('[DealIntake] Querying marketplace deals', {
+    listingType,
+    status,
+    limit,
+    offset
+  });
+
+  try {
+    // Query deal drafts with PUBLIC listing type and specified status
+    const where = {
+      listingType: listingType,
+      status: status
+    };
+
+    const [drafts, total] = await Promise.all([
+      prisma.dealDraft.findMany({
+        where,
+        take: limit,
+        skip: offset,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          propertyName: true,
+          propertyAddress: true,
+          city: true,
+          state: true,
+          assetType: true,
+          askingPrice: true,
+          pricePerSF: true,
+          squareFeet: true,
+          units: true,
+          yearBuilt: true,
+          capRate: true,
+          createdAt: true,
+          listingType: true,
+          status: true,
+          // Include primary broker info for display
+          brokers: {
+            where: { role: 'PRIMARY' },
+            take: 1,
+            select: {
+              id: true,
+              userId: true,
+              name: true,
+              email: true
+            }
+          }
+        }
+      }),
+      prisma.dealDraft.count({ where })
+    ]);
+
+    console.log('[DealIntake] Found marketplace deals', {
+      total,
+      count: drafts.length
+    });
+
+    return sendJson(res, 200, { deals: drafts, total });
+  } catch (error) {
+    console.error('[DealIntake] List marketplace deals error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+/**
  * Get a single deal draft
  * GET /api/intake/draft/:id
  */
@@ -152,17 +312,9 @@ export async function handleGetDraft(req, res, dealDraftId, authUser) {
   try {
     const dealDraft = await dealIngestService.getDealDraft(dealDraftId, true);
 
-    // Check access:
-    // - Must be broker on this deal, OR
-    // - Must be seller on this deal, OR
-    // - Must be GP in the same organization (for GP Dashboard), OR
-    // - Must be Admin
-    const isBroker = dealDraft.brokers?.some(b => b.userId === authUser.id);
-    const isSeller = dealDraft.seller?.userId === authUser.id;
-    const isSameOrg = dealDraft.organizationId === authUser.organizationId;
-    const isGPInOrg = isSameOrg && (authUser.role === 'GP' || authUser.role === 'GP Analyst');
-
-    if (!isBroker && !isSeller && !isGPInOrg && authUser.role !== 'Admin') {
+    // Check access (includes cross-org broker invitations)
+    const hasAccess = await checkDealDraftAccess(dealDraft, authUser);
+    if (!hasAccess) {
       return sendError(res, 403, 'Access denied');
     }
 
@@ -189,22 +341,40 @@ export async function handleUploadDocuments(req, res, dealDraftId, readJsonBody,
   }
 
   const body = await readJsonBody(req);
-  if (!body?.documents || !Array.isArray(body.documents)) {
-    return sendError(res, 400, 'documents array required');
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleUploadDocuments');
+  validationLog.beforeValidation(body);
+
+  const parsed = UploadDocumentsSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
 
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    // Verify access
+    // Verify access - must be an assigned broker, invited broker, or admin
     const dealDraft = await dealIngestService.getDealDraft(dealDraftId, true);
     const isBroker = dealDraft.brokers?.some(b => b.userId === authUser.id);
+    const isInvited = await isInvitedBroker(dealDraftId, authUser.email);
 
-    if (!isBroker && authUser.role !== 'Admin') {
+    if (!isBroker && !isInvited && authUser.role !== 'Admin') {
       return sendError(res, 403, 'Only brokers can upload documents');
     }
 
     const result = await dealIngestService.addDocuments(
       dealDraftId,
-      body.documents,
+      parsed.data.documents,
       authUser.id
     );
 
@@ -228,9 +398,26 @@ export async function handlePasteText(req, res, dealDraftId, readJsonBody, authU
   }
 
   const body = await readJsonBody(req);
-  if (!body?.text || typeof body.text !== 'string') {
-    return sendError(res, 400, 'text field required');
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handlePasteText');
+  validationLog.beforeValidation(body);
+
+  const parsed = PasteTextSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
 
   try {
     // Verify access
@@ -246,8 +433,8 @@ export async function handlePasteText(req, res, dealDraftId, readJsonBody, authU
     // Extract claims from pasted text
     const result = await dealClaimExtractorService.extractFromText({
       dealDraftId,
-      text: body.text,
-      sourceName: body.sourceName || 'Pasted Text'
+      text: parsed.data.text,
+      sourceName: parsed.data.sourceName
     });
 
     return sendJson(res, 200, result);
@@ -270,9 +457,26 @@ export async function handleAddBroker(req, res, dealDraftId, readJsonBody, authU
   }
 
   const body = await readJsonBody(req);
-  if (!body?.email || !body?.name) {
-    return sendError(res, 400, 'email and name required');
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleAddBroker');
+  validationLog.beforeValidation(body);
+
+  const parsed = AddBrokerSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
 
   try {
     // Verify caller is primary broker
@@ -289,24 +493,24 @@ export async function handleAddBroker(req, res, dealDraftId, readJsonBody, authU
     }
 
     // Look up user by email or create placeholder
-    let userId = body.userId;
+    let userId = parsed.data.userId;
     if (!userId) {
       const user = await prisma.authUser.findFirst({
         where: {
-          email: body.email,
+          email: parsed.data.email,
           organizationId: authUser.organizationId
         }
       });
-      userId = user?.id || `pending_${body.email}`;
+      userId = user?.id || `pending_${parsed.data.email}`;
     }
 
     const broker = await dealIngestService.addCoBroker(
       dealDraftId,
       {
         userId,
-        email: body.email,
-        name: body.name,
-        firmName: body.firmName
+        email: parsed.data.email,
+        name: parsed.data.name,
+        firmName: parsed.data.firmName
       },
       authUser.id
     );
@@ -328,9 +532,26 @@ export async function handleSetSeller(req, res, dealDraftId, readJsonBody, authU
   }
 
   const body = await readJsonBody(req);
-  if (!body?.email || !body?.name) {
-    return sendError(res, 400, 'email and name required');
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleSetSeller');
+  validationLog.beforeValidation(body);
+
+  const parsed = SetSellerSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
 
   try {
     // Verify caller is a broker on this deal
@@ -343,29 +564,29 @@ export async function handleSetSeller(req, res, dealDraftId, readJsonBody, authU
     }
 
     // Look up user by email
-    let userId = body.userId;
+    let userId = parsed.data.userId;
     if (!userId) {
       const user = await prisma.authUser.findFirst({
         where: {
-          email: body.email,
+          email: parsed.data.email,
           organizationId: authUser.organizationId
         }
       });
-      userId = user?.id || `pending_${body.email}`;
+      userId = user?.id || `pending_${parsed.data.email}`;
     }
 
     const seller = await dealIngestService.setSeller(
       dealDraftId,
       {
         userId,
-        email: body.email,
-        name: body.name,
-        entityName: body.entityName,
-        hasDirectAccess: body.hasDirectAccess,
-        receiveNotifications: body.receiveNotifications,
-        requiresOMApproval: body.requiresOMApproval,
-        requiresBuyerApproval: body.requiresBuyerApproval,
-        sellerSeesBuyerIdentity: body.sellerSeesBuyerIdentity
+        email: parsed.data.email,
+        name: parsed.data.name,
+        entityName: parsed.data.entityName,
+        hasDirectAccess: parsed.data.hasDirectAccess,
+        receiveNotifications: parsed.data.receiveNotifications,
+        requiresOMApproval: parsed.data.requiresOMApproval,
+        requiresBuyerApproval: parsed.data.requiresBuyerApproval,
+        sellerSeesBuyerIdentity: parsed.data.sellerSeesBuyerIdentity
       },
       authUser.id
     );
@@ -446,11 +667,28 @@ export async function handleVerifyClaim(req, res, dealDraftId, claimId, readJson
   }
 
   const body = await readJsonBody(req);
-  const { action, correctedValue, rejectionReason } = body || {};
 
-  if (!action || !['confirm', 'reject'].includes(action)) {
-    return sendError(res, 400, 'action must be "confirm" or "reject"');
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleVerifyClaim');
+  validationLog.beforeValidation(body);
+
+  const parsed = VerifyClaimSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { action, correctedValue, rejectionReason } = parsed.data;
 
   try {
     // Verify access
@@ -546,9 +784,26 @@ export async function handleResolveConflict(req, res, dealDraftId, conflictId, r
   }
 
   const body = await readJsonBody(req);
-  if (!body?.method) {
-    return sendError(res, 400, 'method required (CHOSE_CLAIM_A, CHOSE_CLAIM_B, MANUAL_OVERRIDE, AVERAGED)');
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleResolveConflict');
+  validationLog.beforeValidation(body);
+
+  const parsed = ResolveConflictSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
 
   try {
     // Verify access
@@ -563,9 +818,9 @@ export async function handleResolveConflict(req, res, dealDraftId, conflictId, r
     const resolved = await dealIngestService.resolveConflict(
       conflictId,
       {
-        resolvedClaimId: body.resolvedClaimId,
-        resolvedValue: body.resolvedValue,
-        method: body.method
+        resolvedClaimId: parsed.data.resolvedClaimId,
+        resolvedValue: parsed.data.resolvedValue,
+        method: parsed.data.method
       },
       { id: authUser.id, name: authUser.name }
     );
@@ -587,11 +842,28 @@ export async function handleAdvanceStatus(req, res, dealDraftId, readJsonBody, a
   }
 
   const body = await readJsonBody(req);
-  if (!body?.status) {
-    return sendError(res, 400, 'status required');
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleAdvanceStatus');
+  validationLog.beforeValidation(body);
+
+  const parsed = AdvanceStatusSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
 
-  if (!Object.values(DEAL_DRAFT_STATUSES).includes(body.status)) {
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  if (!Object.values(DEAL_DRAFT_STATUSES).includes(parsed.data.status)) {
     return sendError(res, 400, `Invalid status. Valid values: ${Object.values(DEAL_DRAFT_STATUSES).join(', ')}`);
   }
 
@@ -600,14 +872,15 @@ export async function handleAdvanceStatus(req, res, dealDraftId, readJsonBody, a
     const dealDraft = await dealIngestService.getDealDraft(dealDraftId, true);
 
     // Check permissions for specific transitions
-    if (body.status === DEAL_DRAFT_STATUSES.OM_BROKER_APPROVED) {
+    if (parsed.data.status === DEAL_DRAFT_STATUSES.OM_BROKER_APPROVED) {
       const isBroker = dealDraft.brokers?.some(b => b.userId === authUser.id);
-      if (!isBroker && authUser.role !== 'Admin') {
+      const isInvited = await isInvitedBroker(dealDraftId, authUser.email);
+      if (!isBroker && !isInvited && authUser.role !== 'Admin') {
         return sendError(res, 403, 'Only brokers can approve OM');
       }
     }
 
-    if (body.status === DEAL_DRAFT_STATUSES.OM_APPROVED_FOR_MARKETING) {
+    if (parsed.data.status === DEAL_DRAFT_STATUSES.OM_APPROVED_FOR_MARKETING) {
       const isSeller = dealDraft.seller?.userId === authUser.id;
       const brokerCanApprove = dealDraft.brokers?.some(
         b => b.userId === authUser.id && b.permissions?.canApproveOM
@@ -620,7 +893,7 @@ export async function handleAdvanceStatus(req, res, dealDraftId, readJsonBody, a
 
     const updated = await dealIngestService.advanceStatus(
       dealDraftId,
-      body.status,
+      parsed.data.status,
       { id: authUser.id, name: authUser.name, role: authUser.role }
     );
 
@@ -638,24 +911,42 @@ export async function handleAdvanceStatus(req, res, dealDraftId, readJsonBody, a
  * When a buyer wins the deal, this converts the intake draft to a kernel deal
  * with the buyer becoming the new GP.
  */
-export async function handleConvertToDeal(req, res, dealDraftId, readJsonBody, authUser) {
+export async function handleConvertToDeal(req, res, dealDraftId, readJsonBody, authUser, kernelBaseUrl) {
   if (!authUser) {
     return sendError(res, 401, 'Not authenticated');
   }
 
   const body = await readJsonBody(req);
-  const { winningBuyerUserId, notes } = body || {};
 
-  if (!winningBuyerUserId) {
-    return sendError(res, 400, 'winningBuyerUserId required');
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleConvertToDeal');
+  validationLog.beforeValidation(body);
+
+  const parsed = ConvertToDealSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
 
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { winningBuyerUserId, notes } = parsed.data;
+
   try {
-    // Verify access - only broker or admin can convert
+    // Verify access - only broker (assigned or invited) or admin can convert
     const dealDraft = await dealIngestService.getDealDraft(dealDraftId, true);
     const isBroker = dealDraft.brokers?.some(b => b.userId === authUser.id);
+    const isInvited = await isInvitedBroker(dealDraftId, authUser.email);
 
-    if (!isBroker && authUser.role !== 'Admin') {
+    if (!isBroker && !isInvited && authUser.role !== 'Admin') {
       return sendError(res, 403, 'Only brokers can convert deals');
     }
 
@@ -668,33 +959,37 @@ export async function handleConvertToDeal(req, res, dealDraftId, readJsonBody, a
       return sendError(res, 404, 'Winning buyer not found');
     }
 
-    // Create the kernel deal
-    const kernelDealId = `deal-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-    const kernelDeal = await prisma.deal.create({
-      data: {
-        id: kernelDealId,
+    // Create the kernel deal via Kernel API (Deal model lives in Kernel, not BFF)
+    const kernelDeal = await kernelFetchJson(`${kernelBaseUrl}/deals`, {
+      method: 'POST',
+      body: JSON.stringify({
         name: dealDraft.propertyName || dealDraft.propertyAddress || 'Converted Deal',
         address: dealDraft.propertyAddress,
         assetType: dealDraft.assetType,
         acquisitionPrice: dealDraft.askingPrice,
         status: 'PRE_CLOSING',
-        // Set the winning buyer as the GP
-        gp: {
-          connect: { id: winningBuyerUserId }
-        },
         organizationId: winningBuyer.organizationId || authUser.organizationId,
-        metadata: JSON.stringify({
+        metadata: {
           convertedFromDraftId: dealDraftId,
           convertedAt: new Date().toISOString(),
           convertedBy: authUser.id,
           originalSellerId: dealDraft.seller?.userId,
           notes
-        }),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      }
+        }
+      })
+    }).catch((error) => {
+      console.error('[DealIntake] Kernel deal creation failed:', error);
+      throw error;
     });
+
+    // Cache the deal in BFF's store
+    if (kernelDeal?.id) {
+      await upsertDealIndex({
+        id: kernelDeal.id,
+        name: kernelDeal.name,
+        organizationId: kernelDeal.organizationId || authUser.organizationId
+      });
+    }
 
     // Update the draft status
     await dealIngestService.advanceStatus(
@@ -771,17 +1066,33 @@ export async function handleUpdateDraft(req, res, dealDraftId, readJsonBody, aut
     return sendError(res, 400, 'Request body required');
   }
 
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleUpdateDraft');
+  validationLog.beforeValidation(body);
+
+  const parsed = UpdateDraftSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
     // Get the draft first to check access
     const dealDraft = await dealIngestService.getDealDraft(dealDraftId, true);
 
-    // Check access (same as handleGetDraft)
-    const isBroker = dealDraft.brokers?.some(b => b.userId === authUser.id);
-    const isSeller = dealDraft.seller?.userId === authUser.id;
-    const isSameOrg = dealDraft.organizationId === authUser.organizationId;
-    const isGPInOrg = isSameOrg && (authUser.role === 'GP' || authUser.role === 'GP Analyst');
-
-    if (!isBroker && !isSeller && !isGPInOrg && authUser.role !== 'Admin') {
+    // Check access (includes cross-org broker invitations)
+    const hasAccess = await checkDealDraftAccess(dealDraft, authUser);
+    if (!hasAccess) {
       return sendError(res, 403, 'Access denied');
     }
 
@@ -793,8 +1104,8 @@ export async function handleUpdateDraft(req, res, dealDraftId, readJsonBody, aut
 
     const updateData = {};
     for (const field of allowedFields) {
-      if (body[field] !== undefined) {
-        updateData[field] = body[field];
+      if (parsed.data[field] !== undefined) {
+        updateData[field] = parsed.data[field];
       }
     }
     updateData.updatedAt = new Date();
@@ -832,19 +1143,35 @@ export async function handleCreateListing(req, res, dealDraftId, readJsonBody, a
     return sendError(res, 400, 'Request body required');
   }
 
-  const { pricingType, askingPrice, priceMin, priceMax, listingType, broker } = body;
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleCreateListing');
+  validationLog.beforeValidation(body);
+
+  const parsed = CreateListingSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { pricingType, askingPrice, priceMin, priceMax, listingType, broker } = parsed.data;
 
   try {
     // Get the draft first to check access
     const dealDraft = await dealIngestService.getDealDraft(dealDraftId, true);
 
-    // Check access
-    const isBroker = dealDraft.brokers?.some(b => b.userId === authUser.id);
-    const isSeller = dealDraft.seller?.userId === authUser.id;
-    const isSameOrg = dealDraft.organizationId === authUser.organizationId;
-    const isGPInOrg = isSameOrg && (authUser.role === 'GP' || authUser.role === 'GP Analyst');
-
-    if (!isBroker && !isSeller && !isGPInOrg && authUser.role !== 'Admin') {
+    // Check access (includes cross-org broker invitations)
+    const hasAccess = await checkDealDraftAccess(dealDraft, authUser);
+    if (!hasAccess) {
       return sendError(res, 403, 'Access denied');
     }
 
@@ -882,17 +1209,18 @@ export async function handleCreateListing(req, res, dealDraftId, readJsonBody, a
         data: {
           id: `bi_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           dealDraftId,
-          brokerEmail: broker.email,
+          organizationId: dealDraft.organizationId,
+          brokerEmail: broker.email.toLowerCase(), // Normalize to lowercase for consistent matching
           brokerName: broker.name || null,
           brokerFirmName: broker.firmName || null,
-          brokerUserId: brokerUser?.id || null,
+          // Note: respondedByUserId is set when broker ACCEPTS the invitation, not at creation
           status: 'PENDING',
           token,
           invitedBy: authUser.id,
           invitedByName: authUser.name,
           invitedByEmail: authUser.email,
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-          createdAt: new Date()
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+          // sentAt is auto-generated by Prisma @default(now())
         }
       });
 
@@ -959,20 +1287,16 @@ export async function handleGetListing(req, res, dealDraftId, authUser) {
   try {
     const dealDraft = await dealIngestService.getDealDraft(dealDraftId, true);
 
-    // Check access
-    const isBroker = dealDraft.brokers?.some(b => b.userId === authUser.id);
-    const isSeller = dealDraft.seller?.userId === authUser.id;
-    const isSameOrg = dealDraft.organizationId === authUser.organizationId;
-    const isGPInOrg = isSameOrg && (authUser.role === 'GP' || authUser.role === 'GP Analyst');
-
-    if (!isBroker && !isSeller && !isGPInOrg && authUser.role !== 'Admin') {
+    // Check access (includes cross-org broker invitations)
+    const hasAccess = await checkDealDraftAccess(dealDraft, authUser);
+    if (!hasAccess) {
       return sendError(res, 403, 'Access denied');
     }
 
     // Get broker invitation if exists
     const brokerInvitation = await prisma.brokerInvitation.findFirst({
       where: { dealDraftId },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { sentAt: 'desc' }
     });
 
     // Get listing agreement if exists
@@ -995,8 +1319,8 @@ export async function handleGetListing(req, res, dealDraftId, authUser) {
         name: brokerInvitation.brokerName,
         firmName: brokerInvitation.brokerFirmName,
         status: brokerInvitation.status,
-        invitedAt: brokerInvitation.createdAt,
-        acceptedAt: brokerInvitation.acceptedAt
+        invitedAt: brokerInvitation.sentAt,
+        acceptedAt: brokerInvitation.respondedAt
       } : null,
       listingAgreement: listingAgreement ? {
         id: listingAgreement.id,
@@ -1060,13 +1384,831 @@ export async function handleCancelListing(req, res, dealDraftId, authUser) {
 }
 
 // ============================================================================
+// Broker Invitation Handlers
+// ============================================================================
+
+/**
+ * Check user's access level to a deal
+ * GET /api/intake/draft/:id/access
+ * Returns the user's relationship to the deal and their permissions
+ */
+async function handleCheckAccess(req, res, dealDraftId, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  try {
+    const draft = await prisma.dealDraft.findUnique({
+      where: { id: dealDraftId },
+      select: {
+        id: true,
+        organizationId: true,
+        status: true,
+        propertyName: true,
+        propertyAddress: true,
+        assetType: true
+      }
+    });
+
+    if (!draft) {
+      return sendError(res, 404, 'Deal not found');
+    }
+
+    // 1. Check if owner (same org)
+    if (draft.organizationId === authUser.organizationId) {
+      return sendJson(res, 200, {
+        relation: 'owner',
+        permissions: ['view_all', 'edit', 'archive', 'manage_listing'],
+        invitation: null
+      });
+    }
+
+    // 2. Check for broker invitation
+    const invitation = await prisma.brokerInvitation.findFirst({
+      where: {
+        dealDraftId,
+        brokerEmail: authUser.email.toLowerCase()
+      }
+    });
+
+    if (invitation) {
+      const relation = invitation.status === 'ACCEPTED' ? 'broker_accepted' : 'broker_pending';
+      return sendJson(res, 200, {
+        relation,
+        permissions: relation === 'broker_accepted'
+          ? ['view_marketing', 'manage_showings', 'view_offers', 'manage_listing']
+          : ['view_basic'],
+        invitation
+      });
+    }
+
+    // 3. Check for distribution recipient (buyer)
+    const recipient = await prisma.distributionRecipient.findFirst({
+      where: {
+        distribution: { dealDraftId },
+        userId: authUser.id
+      }
+    });
+
+    if (recipient) {
+      return sendJson(res, 200, {
+        relation: 'buyer',
+        permissions: ['view_om', 'submit_response'],
+        invitation: null
+      });
+    }
+
+    return sendError(res, 403, 'No access to this deal');
+  } catch (error) {
+    console.error('[DealIntake] Check access error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+/**
+ * List broker invitations for current user
+ * GET /api/intake/invitations
+ */
+async function handleListInvitations(req, res, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  try {
+    const invitations = await prisma.brokerInvitation.findMany({
+      where: {
+        brokerEmail: authUser.email.toLowerCase(),
+        status: { in: ['PENDING', 'ACCEPTED'] }
+      },
+      include: {
+        dealDraft: {
+          select: {
+            id: true,
+            propertyName: true,
+            propertyAddress: true,
+            status: true,
+            assetType: true,
+            askingPrice: true,
+            priceMin: true,
+            priceMax: true
+          }
+        }
+      },
+      orderBy: { sentAt: 'desc' }
+    });
+
+    console.log('[DealIntake] Listed invitations for user', {
+      userEmail: authUser.email,
+      count: invitations.length
+    });
+
+    return sendJson(res, 200, { invitations });
+  } catch (error) {
+    console.error('[DealIntake] List invitations error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+/**
+ * Accept a broker invitation
+ * POST /api/intake/invitation/:id/accept
+ */
+async function handleAcceptInvitation(req, res, invitationId, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  try {
+    // Find the invitation
+    const invitation = await prisma.brokerInvitation.findUnique({
+      where: { id: invitationId },
+      include: { dealDraft: true }
+    });
+
+    if (!invitation) {
+      return sendError(res, 404, 'Invitation not found');
+    }
+
+    // Verify this invitation was sent to the current user
+    if (invitation.brokerEmail.toLowerCase() !== authUser.email.toLowerCase()) {
+      return sendError(res, 403, 'This invitation was not sent to you');
+    }
+
+    // Check invitation status
+    if (invitation.status !== 'PENDING') {
+      return sendError(res, 400, `Invitation already ${invitation.status.toLowerCase()}`);
+    }
+
+    // Check if expired
+    if (invitation.expiresAt && new Date(invitation.expiresAt) < new Date()) {
+      return sendError(res, 400, 'Invitation has expired');
+    }
+
+    // Update invitation status
+    await prisma.brokerInvitation.update({
+      where: { id: invitationId },
+      data: {
+        status: 'ACCEPTED',
+        respondedAt: new Date(),
+        respondedByUserId: authUser.id
+      }
+    });
+
+    // Update deal status to LISTED_ACTIVE
+    if (invitation.dealDraftId) {
+      await prisma.dealDraft.update({
+        where: { id: invitation.dealDraftId },
+        data: { status: 'LISTED_ACTIVE' }
+      });
+    }
+
+    // Create notification for the inviter (GP/Seller)
+    try {
+      await prisma.notification.create({
+        data: {
+          id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          userId: invitation.invitedBy,
+          type: 'LISTING_INVITATION_ACCEPTED',
+          title: 'Broker accepted invitation',
+          body: `${authUser.name || authUser.email} has accepted your invitation to represent ${invitation.dealDraft?.propertyName || 'your property'}`,
+          dealId: invitation.dealDraftId,
+          actionUrl: `/DealWorkspace?dealDraftId=${invitation.dealDraftId}`,
+          isRead: false,
+          createdAt: new Date()
+        }
+      });
+    } catch (notifError) {
+      console.warn('[DealIntake] Failed to create notification:', notifError.message);
+    }
+
+    console.log('[DealIntake] Invitation accepted', {
+      invitationId,
+      dealDraftId: invitation.dealDraftId,
+      broker: authUser.email
+    });
+
+    return sendJson(res, 200, {
+      success: true,
+      message: 'Invitation accepted',
+      dealDraftId: invitation.dealDraftId
+    });
+  } catch (error) {
+    console.error('[DealIntake] Accept invitation error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+/**
+ * Decline a broker invitation
+ * POST /api/intake/invitation/:id/decline
+ */
+async function handleDeclineInvitation(req, res, invitationId, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  try {
+    // Find the invitation
+    const invitation = await prisma.brokerInvitation.findUnique({
+      where: { id: invitationId },
+      include: { dealDraft: true }
+    });
+
+    if (!invitation) {
+      return sendError(res, 404, 'Invitation not found');
+    }
+
+    // Verify this invitation was sent to the current user
+    if (invitation.brokerEmail.toLowerCase() !== authUser.email.toLowerCase()) {
+      return sendError(res, 403, 'This invitation was not sent to you');
+    }
+
+    // Check invitation status
+    if (invitation.status !== 'PENDING') {
+      return sendError(res, 400, `Invitation already ${invitation.status.toLowerCase()}`);
+    }
+
+    // Update invitation status
+    await prisma.brokerInvitation.update({
+      where: { id: invitationId },
+      data: {
+        status: 'DECLINED',
+        respondedAt: new Date(),
+        respondedByUserId: authUser.id
+      }
+    });
+
+    // Create notification for the inviter (GP/Seller)
+    try {
+      await prisma.notification.create({
+        data: {
+          id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          userId: invitation.invitedBy,
+          type: 'LISTING_INVITATION_DECLINED',
+          title: 'Broker declined invitation',
+          body: `${authUser.name || authUser.email} has declined your invitation to represent ${invitation.dealDraft?.propertyName || 'your property'}`,
+          dealId: invitation.dealDraftId,
+          actionUrl: `/DealWorkspace?dealDraftId=${invitation.dealDraftId}`,
+          isRead: false,
+          createdAt: new Date()
+        }
+      });
+    } catch (notifError) {
+      console.warn('[DealIntake] Failed to create notification:', notifError.message);
+    }
+
+    console.log('[DealIntake] Invitation declined', {
+      invitationId,
+      dealDraftId: invitation.dealDraftId,
+      broker: authUser.email
+    });
+
+    return sendJson(res, 200, {
+      success: true,
+      message: 'Invitation declined'
+    });
+  } catch (error) {
+    console.error('[DealIntake] Decline invitation error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+// ============================================================================
+// COMMISSION NEGOTIATION HANDLERS
+// ============================================================================
+
+/**
+ * Get negotiation history for an invitation
+ * GET /api/intake/invitation/:id/negotiations
+ */
+async function handleGetNegotiations(req, res, invitationId, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  console.log('[DealIntake] Get negotiations', { invitationId, userId: authUser.id });
+
+  try {
+    const invitation = await prisma.brokerInvitation.findUnique({
+      where: { id: invitationId },
+      include: {
+        dealDraft: true,
+        negotiations: {
+          orderBy: { createdAt: 'asc' }
+        }
+      }
+    });
+
+    if (!invitation) {
+      return sendError(res, 404, 'Invitation not found');
+    }
+
+    // Check access - must be inviter (seller) or invitee (broker)
+    const isSeller = invitation.invitedBy === authUser.id;
+    const isBroker = invitation.brokerEmail.toLowerCase() === authUser.email.toLowerCase();
+
+    if (!isSeller && !isBroker) {
+      return sendError(res, 403, 'Not authorized to view this negotiation');
+    }
+
+    return sendJson(res, 200, {
+      negotiations: invitation.negotiations,
+      invitationStatus: invitation.status,
+      negotiationStatus: invitation.negotiationStatus,
+      sellerTerms: {
+        commissionType: invitation.commissionType,
+        commissionRate: invitation.commissionRate,
+        commissionAmount: invitation.commissionAmount,
+        commissionNotes: invitation.commissionNotes
+      }
+    });
+  } catch (error) {
+    console.error('[DealIntake] Get negotiations error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+/**
+ * Submit a counter-offer for commission terms
+ * POST /api/intake/invitation/:id/counter-offer
+ */
+async function handleCounterOffer(req, res, invitationId, readJsonBody, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  console.log('[DealIntake] Counter offer submitted', { invitationId, userId: authUser.id });
+
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleCounterOffer');
+  validationLog.beforeValidation(body);
+
+  const parsed = CounterOfferSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { commissionType, commissionRate, commissionAmount, notes } = parsed.data;
+
+  try {
+    const invitation = await prisma.brokerInvitation.findUnique({
+      where: { id: invitationId },
+      include: {
+        dealDraft: true,
+        negotiations: {
+          orderBy: { createdAt: 'desc' },
+          take: 1
+        }
+      }
+    });
+
+    if (!invitation) {
+      return sendError(res, 404, 'Invitation not found');
+    }
+
+    // Check access and determine role
+    const isSeller = invitation.invitedBy === authUser.id;
+    const isBroker = invitation.brokerEmail.toLowerCase() === authUser.email.toLowerCase();
+
+    if (!isSeller && !isBroker) {
+      return sendError(res, 403, 'Not authorized to make counter-offer');
+    }
+
+    // Determine round number
+    const lastNegotiation = invitation.negotiations[0];
+    const round = lastNegotiation ? lastNegotiation.round + 1 : 1;
+
+    // Create negotiation record
+    const negotiation = await prisma.commissionNegotiation.create({
+      data: {
+        invitationId,
+        proposedBy: authUser.id,
+        proposedByRole: isSeller ? 'SELLER' : 'BROKER',
+        commissionType,
+        commissionRate: commissionRate ? parseFloat(commissionRate) / 100 : null, // Convert percent to decimal
+        commissionAmount: commissionAmount ? parseFloat(commissionAmount) : null,
+        notes,
+        status: 'PENDING',
+        round
+      }
+    });
+
+    // Update invitation negotiation status
+    await prisma.brokerInvitation.update({
+      where: { id: invitationId },
+      data: { negotiationStatus: 'PENDING' }
+    });
+
+    // Create notification for the other party
+    const notifyUserId = isSeller ? null : invitation.invitedBy;
+    const notifyEmail = isSeller ? invitation.brokerEmail : null;
+
+    if (notifyUserId) {
+      try {
+        await prisma.notification.create({
+          data: {
+            id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            userId: notifyUserId,
+            type: 'COMMISSION_COUNTER_OFFER',
+            title: 'Commission counter-offer received',
+            body: `${authUser.name || authUser.email} submitted a counter-offer for ${invitation.dealDraft?.propertyName || 'your listing'}`,
+            dealId: invitation.dealDraftId,
+            actionUrl: `/DealWorkspace?dealDraftId=${invitation.dealDraftId}`,
+            isRead: false,
+            createdAt: new Date()
+          }
+        });
+      } catch (notifError) {
+        console.warn('[DealIntake] Failed to create notification:', notifError.message);
+      }
+    }
+
+    // Warning after 3 rounds
+    if (round >= 3) {
+      console.log('[DealIntake] Negotiation round warning', { invitationId, round });
+    }
+
+    console.log('[DealIntake] Counter offer created', { negotiationId: negotiation.id, round });
+
+    return sendJson(res, 201, {
+      success: true,
+      negotiation,
+      round,
+      warning: round >= 3 ? 'Multiple negotiation rounds. Consider direct communication.' : null
+    });
+  } catch (error) {
+    console.error('[DealIntake] Counter offer error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+/**
+ * Accept a negotiation offer
+ * POST /api/intake/negotiation/:id/accept
+ */
+async function handleAcceptNegotiation(req, res, negotiationId, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  console.log('[DealIntake] Accept negotiation', { negotiationId, userId: authUser.id });
+
+  try {
+    const negotiation = await prisma.commissionNegotiation.findUnique({
+      where: { id: negotiationId },
+      include: {
+        invitation: {
+          include: { dealDraft: true }
+        }
+      }
+    });
+
+    if (!negotiation) {
+      return sendError(res, 404, 'Negotiation not found');
+    }
+
+    if (negotiation.status !== 'PENDING') {
+      return sendError(res, 400, `Negotiation already ${negotiation.status.toLowerCase()}`);
+    }
+
+    // Only the other party can accept (not the one who proposed)
+    const invitation = negotiation.invitation;
+    const isSeller = invitation.invitedBy === authUser.id;
+    const isBroker = invitation.brokerEmail.toLowerCase() === authUser.email.toLowerCase();
+
+    if (!isSeller && !isBroker) {
+      return sendError(res, 403, 'Not authorized');
+    }
+
+    // Cannot accept your own offer
+    if (negotiation.proposedBy === authUser.id) {
+      return sendError(res, 400, 'Cannot accept your own offer');
+    }
+
+    // Update negotiation
+    await prisma.commissionNegotiation.update({
+      where: { id: negotiationId },
+      data: {
+        status: 'ACCEPTED',
+        respondedAt: new Date(),
+        respondedBy: authUser.id
+      }
+    });
+
+    // Update invitation with agreed terms
+    await prisma.brokerInvitation.update({
+      where: { id: invitation.id },
+      data: {
+        negotiationStatus: 'AGREED',
+        commissionType: negotiation.commissionType,
+        commissionRate: negotiation.commissionRate,
+        commissionAmount: negotiation.commissionAmount,
+        commissionNotes: negotiation.notes
+      }
+    });
+
+    // Notify the proposer
+    try {
+      await prisma.notification.create({
+        data: {
+          id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          userId: negotiation.proposedBy,
+          type: 'COMMISSION_AGREED',
+          title: 'Commission terms accepted',
+          body: `${authUser.name || authUser.email} has accepted your commission terms for ${invitation.dealDraft?.propertyName || 'the listing'}`,
+          dealId: invitation.dealDraftId,
+          actionUrl: `/DealWorkspace?dealDraftId=${invitation.dealDraftId}`,
+          isRead: false,
+          createdAt: new Date()
+        }
+      });
+    } catch (notifError) {
+      console.warn('[DealIntake] Failed to create notification:', notifError.message);
+    }
+
+    console.log('[DealIntake] Negotiation accepted', { negotiationId, invitationId: invitation.id });
+
+    return sendJson(res, 200, {
+      success: true,
+      message: 'Commission terms agreed',
+      agreedTerms: {
+        commissionType: negotiation.commissionType,
+        commissionRate: negotiation.commissionRate,
+        commissionAmount: negotiation.commissionAmount
+      }
+    });
+  } catch (error) {
+    console.error('[DealIntake] Accept negotiation error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+/**
+ * Flag invitation for negotiate-later
+ * POST /api/intake/invitation/:id/negotiate-later
+ */
+async function handleNegotiateLater(req, res, invitationId, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  console.log('[DealIntake] Negotiate later flagged', { invitationId, userId: authUser.id });
+
+  try {
+    const invitation = await prisma.brokerInvitation.findUnique({
+      where: { id: invitationId },
+      include: { dealDraft: true }
+    });
+
+    if (!invitation) {
+      return sendError(res, 404, 'Invitation not found');
+    }
+
+    // Check access
+    const isSeller = invitation.invitedBy === authUser.id;
+    const isBroker = invitation.brokerEmail.toLowerCase() === authUser.email.toLowerCase();
+
+    if (!isSeller && !isBroker) {
+      return sendError(res, 403, 'Not authorized');
+    }
+
+    // Update invitation
+    await prisma.brokerInvitation.update({
+      where: { id: invitationId },
+      data: { negotiationStatus: 'NEGOTIATE_LATER' }
+    });
+
+    console.log('[DealIntake] Negotiation flagged for later', { invitationId });
+
+    return sendJson(res, 200, {
+      success: true,
+      message: 'Marked for later negotiation'
+    });
+  } catch (error) {
+    console.error('[DealIntake] Negotiate later error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+// ============================================================================
+// LISTING CONFIGURATION HANDLERS
+// ============================================================================
+
+/**
+ * Get listing configuration for a deal draft
+ * GET /api/intake/draft/:id/listing-config
+ */
+async function handleGetListingConfig(req, res, dealDraftId, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  console.log('[DealIntake] Get listing config', { dealDraftId, userId: authUser.id });
+
+  try {
+    const config = await prisma.listingConfiguration.findUnique({
+      where: { dealDraftId }
+    });
+
+    return sendJson(res, 200, { config: config || null });
+  } catch (error) {
+    console.error('[DealIntake] Get listing config error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+/**
+ * Create or update listing configuration
+ * POST /api/intake/draft/:id/listing-config
+ */
+async function handleCreateListingConfig(req, res, dealDraftId, readJsonBody, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  console.log('[DealIntake] Create/update listing config', { dealDraftId, userId: authUser.id });
+
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleCreateListingConfig');
+  validationLog.beforeValidation(body);
+
+  const parsed = CreateListingConfigSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  try {
+    const configData = {
+      dealDraftId,
+      visibility: parsed.data.visibility || 'PLATFORM',
+      targetBuyerTypes: parsed.data.targetBuyerTypes || [],
+      targetInvestmentMin: parsed.data.targetInvestmentMin || null,
+      targetInvestmentMax: parsed.data.targetInvestmentMax || null,
+      targetGeographies: parsed.data.targetGeographies || [],
+      enableOM: parsed.data.enableOM !== false,
+      enableFlyers: parsed.data.enableFlyers || false,
+      enablePropertyWebsite: parsed.data.enablePropertyWebsite || false,
+      offerDeadline: parsed.data.offerDeadline ? new Date(parsed.data.offerDeadline) : null,
+      listingDuration: parsed.data.listingDuration || null,
+      openHouseDates: parsed.data.openHouseDates?.map(d => new Date(d)) || [],
+      configuredBy: authUser.id,
+      configuredByName: authUser.name || authUser.email
+    };
+
+    const config = await prisma.listingConfiguration.upsert({
+      where: { dealDraftId },
+      create: configData,
+      update: configData
+    });
+
+    console.log('[DealIntake] Listing config saved', { configId: config.id });
+
+    return sendJson(res, 200, { config, message: 'Configuration saved' });
+  } catch (error) {
+    console.error('[DealIntake] Create listing config error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+/**
+ * Confirm listing agreement (checkbox confirmation)
+ * POST /api/intake/draft/:id/agreement/confirm
+ */
+async function handleConfirmAgreement(req, res, dealDraftId, readJsonBody, authUser) {
+  if (!authUser) {
+    return sendError(res, 401, 'Not authenticated');
+  }
+
+  console.log('[DealIntake] Confirm agreement', { dealDraftId, userId: authUser.id });
+
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleConfirmAgreement');
+  validationLog.beforeValidation(body);
+
+  const parsed = ConfirmAgreementSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { agreementId } = parsed.data;
+
+  try {
+    // Get client IP for ESIGN compliance
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+                     req.headers['x-real-ip'] ||
+                     req.socket?.remoteAddress ||
+                     'unknown';
+
+    const agreement = await prisma.listingAgreement.findUnique({
+      where: { id: agreementId },
+      include: { dealDraft: true }
+    });
+
+    if (!agreement) {
+      return sendError(res, 404, 'Agreement not found');
+    }
+
+    // Determine which party is confirming
+    const isSeller = agreement.sellerUserId === authUser.id;
+    const isBroker = agreement.brokerUserId === authUser.id;
+
+    if (!isSeller && !isBroker) {
+      return sendError(res, 403, 'Not authorized to confirm this agreement');
+    }
+
+    const updateData = {};
+    if (isSeller && !agreement.sellerConfirmedAt) {
+      updateData.sellerConfirmedAt = new Date();
+      updateData.sellerConfirmedIp = clientIp;
+    }
+    if (isBroker && !agreement.brokerConfirmedAt) {
+      updateData.brokerConfirmedAt = new Date();
+      updateData.brokerConfirmedIp = clientIp;
+    }
+
+    // Check if both parties have now confirmed
+    const bothConfirmed = (agreement.sellerConfirmedAt || updateData.sellerConfirmedAt) &&
+                          (agreement.brokerConfirmedAt || updateData.brokerConfirmedAt);
+
+    if (bothConfirmed) {
+      updateData.status = 'ACTIVE';
+    } else if (isSeller) {
+      updateData.status = 'PENDING_BROKER';
+    } else {
+      updateData.status = 'PENDING_SELLER';
+    }
+
+    const updated = await prisma.listingAgreement.update({
+      where: { id: agreementId },
+      data: updateData
+    });
+
+    console.log('[DealIntake] Agreement confirmed', {
+      agreementId,
+      confirmedBy: isSeller ? 'SELLER' : 'BROKER',
+      clientIp,
+      status: updated.status
+    });
+
+    return sendJson(res, 200, {
+      success: true,
+      agreement: updated,
+      bothConfirmed,
+      message: bothConfirmed ? 'Agreement fully executed' : 'Confirmation recorded'
+    });
+  } catch (error) {
+    console.error('[DealIntake] Confirm agreement error:', error);
+    return sendError(res, 500, error.message);
+  }
+}
+
+// ============================================================================
 // Route Dispatcher
 // ============================================================================
 
 /**
  * Main route dispatcher for /api/intake/*
  */
-export function dispatchIntakeRoutes(req, res, segments, readJsonBody, authUser) {
+export function dispatchIntakeRoutes(req, res, segments, readJsonBody, authUser, kernelBaseUrl) {
   const method = req.method;
   // segments = ['api', 'intake', ...] so we check from index 2 onwards
 
@@ -1080,6 +2222,11 @@ export function dispatchIntakeRoutes(req, res, segments, readJsonBody, authUser)
   // GET /api/intake/drafts - List drafts
   if (method === 'GET' && segments.length === 3 && segments[2] === 'drafts') {
     return handleListDrafts(req, res, authUser);
+  }
+
+  // GET /api/intake/deals - List marketplace deals (public listings)
+  if (method === 'GET' && segments.length === 3 && segments[2] === 'deals') {
+    return handleListMarketplaceDeals(req, res, authUser);
   }
 
   // GET /api/intake/draft/:id - Get draft
@@ -1177,7 +2324,72 @@ export function dispatchIntakeRoutes(req, res, segments, readJsonBody, authUser)
   // POST /api/intake/draft/:id/convert - Convert to kernel deal
   if (method === 'POST' && segments.length === 5 && segments[2] === 'draft' && segments[4] === 'convert') {
     const dealDraftId = segments[3];
-    return handleConvertToDeal(req, res, dealDraftId, readJsonBody, authUser);
+    return handleConvertToDeal(req, res, dealDraftId, readJsonBody, authUser, kernelBaseUrl);
+  }
+
+  // GET /api/intake/draft/:id/access - Check user's access level to a deal
+  if (method === 'GET' && segments.length === 5 && segments[2] === 'draft' && segments[4] === 'access') {
+    const dealDraftId = segments[3];
+    return handleCheckAccess(req, res, dealDraftId, authUser);
+  }
+
+  // GET /api/intake/invitations - List broker invitations for current user
+  if (method === 'GET' && segments.length === 3 && segments[2] === 'invitations') {
+    return handleListInvitations(req, res, authUser);
+  }
+
+  // POST /api/intake/invitation/:id/accept - Accept broker invitation
+  if (method === 'POST' && segments.length === 5 && segments[2] === 'invitation' && segments[4] === 'accept') {
+    const invitationId = segments[3];
+    return handleAcceptInvitation(req, res, invitationId, authUser);
+  }
+
+  // POST /api/intake/invitation/:id/decline - Decline broker invitation
+  if (method === 'POST' && segments.length === 5 && segments[2] === 'invitation' && segments[4] === 'decline') {
+    const invitationId = segments[3];
+    return handleDeclineInvitation(req, res, invitationId, authUser);
+  }
+
+  // GET /api/intake/invitation/:id/negotiations - Get negotiation history
+  if (method === 'GET' && segments.length === 5 && segments[2] === 'invitation' && segments[4] === 'negotiations') {
+    const invitationId = segments[3];
+    return handleGetNegotiations(req, res, invitationId, authUser);
+  }
+
+  // POST /api/intake/invitation/:id/counter-offer - Submit counter-offer
+  if (method === 'POST' && segments.length === 5 && segments[2] === 'invitation' && segments[4] === 'counter-offer') {
+    const invitationId = segments[3];
+    return handleCounterOffer(req, res, invitationId, readJsonBody, authUser);
+  }
+
+  // POST /api/intake/negotiation/:id/accept - Accept negotiation offer
+  if (method === 'POST' && segments.length === 5 && segments[2] === 'negotiation' && segments[4] === 'accept') {
+    const negotiationId = segments[3];
+    return handleAcceptNegotiation(req, res, negotiationId, authUser);
+  }
+
+  // POST /api/intake/invitation/:id/negotiate-later - Flag for later negotiation
+  if (method === 'POST' && segments.length === 5 && segments[2] === 'invitation' && segments[4] === 'negotiate-later') {
+    const invitationId = segments[3];
+    return handleNegotiateLater(req, res, invitationId, authUser);
+  }
+
+  // GET /api/intake/draft/:id/listing-config - Get listing configuration
+  if (method === 'GET' && segments.length === 5 && segments[2] === 'draft' && segments[4] === 'listing-config') {
+    const dealDraftId = segments[3];
+    return handleGetListingConfig(req, res, dealDraftId, authUser);
+  }
+
+  // POST /api/intake/draft/:id/listing-config - Create/update listing configuration
+  if (method === 'POST' && segments.length === 5 && segments[2] === 'draft' && segments[4] === 'listing-config') {
+    const dealDraftId = segments[3];
+    return handleCreateListingConfig(req, res, dealDraftId, readJsonBody, authUser);
+  }
+
+  // POST /api/intake/draft/:id/agreement/confirm - Confirm listing agreement
+  if (method === 'POST' && segments.length === 6 && segments[2] === 'draft' && segments[4] === 'agreement' && segments[5] === 'confirm') {
+    const dealDraftId = segments[3];
+    return handleConfirmAgreement(req, res, dealDraftId, readJsonBody, authUser);
   }
 
   // Not found

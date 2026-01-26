@@ -27,14 +27,17 @@ function sendKernelUnavailable(res, error) {
   });
 }
 
-export async function handleInbox(req, res, kernelBaseUrl, resolveUserId) {
+/**
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
+ */
+export async function handleInbox(req, res, kernelBaseUrl, authUser) {
   const url = new URL(req.url, "http://localhost");
   const scope = url.searchParams.get("scope") ?? "mine";
   if (!["mine", "waiting", "risk", "data_requests"].includes(scope)) {
     return sendError(res, 400, "Invalid inbox scope");
   }
 
-  const userId = resolveUserId(req);
+  const userId = authUser.id;  // T1.3: Use validated JWT identity
   const cacheKey = `inbox:${scope}:${userId}`;
   const cached = getCache(cacheKey);
   if (cached) {

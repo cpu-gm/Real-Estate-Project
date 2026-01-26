@@ -1,0 +1,452 @@
+import React, { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
+import { createPageUrl } from '../utils';
+import { useRole } from '../Layout';
+import { useAuth } from '@/lib/AuthContext';
+import { bff } from '@/api/bffClient';
+import { cn } from '@/lib/utils';
+import {
+  AlertTriangle,
+  AlertCircle,
+  ChevronRight,
+  Clock,
+  Plus,
+  Send,
+  Briefcase,
+  FileText,
+  Upload,
+  Home as HomeIcon,
+  Users,
+  DollarSign,
+  TrendingUp,
+  Menu,
+  X,
+  Bell,
+  Loader2,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import UrgencyBadge from '@/components/UrgencyBadge';
+
+// Task Category Card Component
+function TaskCategoryCard({ title, icon: Icon, tasks, isLoading, delay = 0 }) {
+  if (isLoading) {
+    return (
+      <div className={cn(
+        "glass-card rounded-xl p-6 hover-lift transition-all",
+        `animate-slide-in-delay-${delay}`
+      )}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-slate-700/50 animate-pulse" />
+          <div className="h-6 w-32 bg-slate-700/50 rounded animate-pulse" />
+        </div>
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="h-16 bg-slate-700/30 rounded-lg animate-pulse" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (!tasks || tasks.length === 0) {
+    return (
+      <div className={cn(
+        "glass-card rounded-xl p-6 hover-lift transition-all",
+        `animate-slide-in-delay-${delay}`
+      )}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center neon-border-cyan border">
+            <Icon className="w-5 h-5 text-cyan-400" />
+          </div>
+          <h3 className="text-lg font-semibold text-white">{title}</h3>
+        </div>
+        <div className="text-center py-8">
+          <p className="text-slate-400 text-sm">All clear - nothing needs your attention</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn(
+      "glass-card rounded-xl p-6 hover-lift transition-all",
+      `animate-slide-in-delay-${delay}`
+    )}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center neon-border-cyan border">
+            <Icon className="w-5 h-5 text-cyan-400" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold text-white">{title}</h3>
+            <p className="text-xs text-slate-400">{tasks.length} item{tasks.length !== 1 ? 's' : ''}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {tasks.slice(0, 5).map((task, idx) => (
+          <TaskItem key={task.id || idx} task={task} />
+        ))}
+        {tasks.length > 5 && (
+          <button className="w-full text-center text-sm text-cyan-400 hover:text-cyan-300 py-2 transition-colors">
+            View all {tasks.length} items →
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Individual Task Item Component
+function TaskItem({ task }) {
+  return (
+    <Link
+      to={task.href || createPageUrl(`DealOverview?id=${task.dealId}`)}
+      className="block p-4 rounded-lg glass hover:bg-white/10 transition-all group"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <h4 className="font-medium text-white text-sm truncate group-hover:text-cyan-300 transition-colors">
+              {task.title || task.dealName}
+            </h4>
+            {task.dueDate && (
+              <UrgencyBadge dueDate={task.dueDate} size="sm" />
+            )}
+          </div>
+          <p className="text-xs text-slate-400 line-clamp-2">
+            {task.description || task.summary}
+          </p>
+        </div>
+        <ChevronRight className="w-4 h-4 text-slate-500 flex-shrink-0 group-hover:text-cyan-400 transition-colors" />
+      </div>
+    </Link>
+  );
+}
+
+// Sidebar Component
+function Sidebar({ isOpen, onClose }) {
+  const { user } = useAuth();
+
+  const navigationItems = [
+    { label: 'Home', icon: HomeIcon, href: createPageUrl('Home'), active: true },
+    { label: 'All Deals', icon: Briefcase, href: createPageUrl('Deals') },
+    { label: 'LPs', icon: Users, href: createPageUrl('Deals') }, // Update with actual LP route
+    { label: 'Capital Calls', icon: DollarSign, href: createPageUrl('CapitalCalls') },
+    { label: 'Reports', icon: TrendingUp, href: createPageUrl('Deals') }, // Update with actual reports route
+  ];
+
+  const quickActions = [
+    { label: 'Create Deal', icon: Plus, href: createPageUrl('CreateDeal'), color: 'cyan' },
+    { label: 'Invite LP', icon: Users, href: createPageUrl('Deals'), color: 'pink' },
+    { label: 'Upload Document', icon: Upload, href: createPageUrl('CreateDeal'), color: 'purple' },
+    { label: 'Send Capital Call', icon: Send, href: createPageUrl('CapitalCalls'), color: 'cyan' },
+  ];
+
+  return (
+    <>
+      {/* Mobile overlay */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
+          onClick={onClose}
+        />
+      )}
+
+      {/* Sidebar */}
+      <aside
+        className={cn(
+          "fixed top-0 left-0 h-screen w-72 glass-strong border-r border-white/10 z-50 transition-transform duration-300",
+          "lg:translate-x-0",
+          isOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        )}
+      >
+        <div className="flex flex-col h-full">
+          {/* Header */}
+          <div className="p-6 border-b border-white/10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-cyan-500 to-pink-500 neon-cyan" />
+                <div>
+                  <h2 className="font-semibold text-white text-sm">{user?.name || 'GP User'}</h2>
+                  <p className="text-xs text-slate-400">{user?.role || 'General Partner'}</p>
+                </div>
+              </div>
+              <button
+                onClick={onClose}
+                className="lg:hidden p-1 hover:bg-white/10 rounded transition-colors"
+              >
+                <X className="w-5 h-5 text-slate-400" />
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Actions */}
+          <div className="p-4 border-b border-white/10">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Quick Actions</p>
+            <div className="grid grid-cols-2 gap-2">
+              {quickActions.map((action) => (
+                <Link
+                  key={action.label}
+                  to={action.href}
+                  className={cn(
+                    "flex flex-col items-center gap-2 p-3 rounded-lg glass hover:bg-white/10 transition-all group",
+                    action.color === 'cyan' && 'hover:neon-border-cyan',
+                    action.color === 'pink' && 'hover:neon-border-pink'
+                  )}
+                >
+                  <action.icon className={cn(
+                    "w-5 h-5 transition-colors",
+                    action.color === 'cyan' && 'text-cyan-400 group-hover:text-cyan-300',
+                    action.color === 'pink' && 'text-pink-400 group-hover:text-pink-300',
+                    action.color === 'purple' && 'text-purple-400 group-hover:text-purple-300'
+                  )} />
+                  <span className="text-xs text-white text-center leading-tight">{action.label}</span>
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          {/* Navigation */}
+          <nav className="flex-1 p-4 overflow-y-auto">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Navigation</p>
+            <div className="space-y-1">
+              {navigationItems.map((item) => (
+                <Link
+                  key={item.label}
+                  to={item.href}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2 rounded-lg transition-all",
+                    item.active
+                      ? "bg-cyan-500/20 text-cyan-300 neon-border-cyan border"
+                      : "text-slate-300 hover:bg-white/5 hover:text-white"
+                  )}
+                >
+                  <item.icon className="w-4 h-4" />
+                  <span className="text-sm font-medium">{item.label}</span>
+                </Link>
+              ))}
+            </div>
+          </nav>
+
+          {/* Footer */}
+          <div className="p-4 border-t border-white/10">
+            <div className="glass rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-1">
+                <Bell className="w-4 h-4 text-slate-400" />
+                <span className="text-xs font-medium text-white">Notifications</span>
+              </div>
+              <p className="text-xs text-slate-400">All caught up!</p>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+// Main GP Home Component
+export default function GPHomeModern() {
+  const { currentRole } = useRole();
+  const queryClient = useQueryClient();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Fetch data
+  const { data: homeData, isLoading } = useQuery({
+    queryKey: ['home', currentRole],
+    queryFn: () => bff.home.getData(),
+    staleTime: 30000
+  });
+
+  const { data: pendingReviews } = useQuery({
+    queryKey: ['pending-reviews'],
+    queryFn: () => bff.reviewRequests.list('pending'),
+    enabled: currentRole === 'GP',
+    staleTime: 30000
+  });
+
+  // Transform data into task categories
+  const taskCategories = {
+    deals: homeData?.decisionCards?.map(card => ({
+      id: card.dealId,
+      dealId: card.dealId,
+      title: card.dealName,
+      description: card.summary,
+      dueDate: card.dueDate,
+      urgency: card.status,
+    })) || [],
+
+    lps: [
+      // Mock LP tasks - replace with actual data
+      ...(homeData?.capitalCalls?.slice(0, 3).map(cc => ({
+        id: `cc-${cc.id}`,
+        title: `Capital Call - ${cc.dealName}`,
+        description: `Send capital call notice to LPs`,
+        dueDate: cc.dueDate,
+      })) || [])
+    ],
+
+    documents: [
+      // Mock document tasks - replace with actual data
+      ...(homeData?.documents?.filter(doc => doc.status === 'pending').slice(0, 3).map(doc => ({
+        id: `doc-${doc.id}`,
+        title: doc.name,
+        description: 'Needs review and signature',
+        dueDate: doc.dueDate,
+      })) || [])
+    ],
+
+    reviews: pendingReviews?.requests?.map(review => ({
+      id: `review-${review.id}`,
+      dealId: review.dealId,
+      title: review.dealName || 'Deal Review',
+      description: `Requested by ${review.requestedByName || 'Analyst'}`,
+      dueDate: review.requestedAt,
+    })) || [],
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-dashboard relative">
+      {/* Sidebar */}
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+
+      {/* Main Content */}
+      <div className="lg:ml-72 min-h-screen">
+        {/* Header */}
+        <header className="glass-strong border-b border-white/10 sticky top-0 z-30 backdrop-blur-xl">
+          <div className="px-6 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setSidebarOpen(true)}
+                  className="lg:hidden p-2 hover:bg-white/10 rounded-lg transition-colors"
+                >
+                  <Menu className="w-5 h-5 text-white" />
+                </button>
+                <div>
+                  <h1 className="text-2xl font-bold text-white">
+                    Good {getTimeOfDay()}
+                  </h1>
+                  <p className="text-sm text-slate-400 mt-1">
+                    {homeData?.dayOfWeek} • {homeData?.portfolioStatus || 'Loading portfolio...'}
+                  </p>
+                </div>
+              </div>
+
+              {homeData?.portfolioSummary && (
+                <div className="hidden md:flex items-center gap-4">
+                  <div className="glass rounded-lg px-4 py-2">
+                    <p className="text-xs text-slate-400">Active Deals</p>
+                    <p className="text-xl font-bold text-white">{homeData.portfolioSummary.totalDeals}</p>
+                  </div>
+                  <div className="glass rounded-lg px-4 py-2">
+                    <p className="text-xs text-slate-400">Total AUM</p>
+                    <p className="text-xl font-bold text-cyan-400">
+                      ${((homeData.portfolioSummary.totalValue || 0) / 1000000).toFixed(1)}M
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </header>
+
+        {/* Main Content Area */}
+        <main className="p-6 space-y-6">
+          {/* Task Categories Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <TaskCategoryCard
+              title="Deals Awaiting Action"
+              icon={Briefcase}
+              tasks={taskCategories.deals}
+              isLoading={isLoading}
+              delay={1}
+            />
+
+            <TaskCategoryCard
+              title="LP Items"
+              icon={Users}
+              tasks={taskCategories.lps}
+              isLoading={isLoading}
+              delay={2}
+            />
+
+            <TaskCategoryCard
+              title="Documents Pending"
+              icon={FileText}
+              tasks={taskCategories.documents}
+              isLoading={isLoading}
+              delay={3}
+            />
+
+            <TaskCategoryCard
+              title="Analyst Reviews"
+              icon={AlertCircle}
+              tasks={taskCategories.reviews}
+              isLoading={isLoading}
+              delay={0}
+            />
+          </div>
+
+          {/* Recent Activity - Optional */}
+          {homeData?.changeFeed && homeData.changeFeed.length > 0 && (
+            <div className="glass-card rounded-xl p-6 animate-slide-in">
+              <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                <Clock className="w-5 h-5 text-cyan-400" />
+                Recent Activity
+              </h3>
+              <div className="space-y-3">
+                {homeData.changeFeed.slice(0, 5).map((change, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-start gap-3 p-3 rounded-lg glass hover:bg-white/5 transition-colors"
+                  >
+                    <div className="w-2 h-2 rounded-full bg-cyan-400 mt-2 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-sm text-white">
+                        <Link
+                          to={createPageUrl(`DealOverview?id=${change.dealId}`)}
+                          className="font-medium hover:text-cyan-300 transition-colors"
+                        >
+                          {change.dealName}
+                        </Link>
+                        {' — '}{change.summary}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        {formatTimeAgo(change.timestamp)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function getTimeOfDay() {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'morning';
+  if (hour < 17) return 'afternoon';
+  return 'evening';
+}
+
+function formatTimeAgo(timestamp) {
+  const now = new Date();
+  const then = new Date(timestamp);
+  const diffMs = now - then;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays} days ago`;
+  return then.toLocaleDateString();
+}

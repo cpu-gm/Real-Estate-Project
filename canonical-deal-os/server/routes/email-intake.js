@@ -14,6 +14,7 @@ import {
   isDDEmailAddress,
   DD_EMAIL_CONFIG
 } from '../services/dd-email-intake.js';
+import { extractAuthUser } from './auth.js';
 
 const prisma = new PrismaClient();
 
@@ -440,16 +441,31 @@ export async function handleEmailWebhook(req, res) {
 }
 
 /**
- * List email intakes (admin view)
+ * List email intakes (GP view)
  * GET /api/email-intake
+ *
+ * SECURITY: Requires GP/Admin authentication and enforces org isolation
  */
 export async function handleListEmailIntakes(req, res) {
+  // SECURITY: Require GP or Admin authentication
+  const authUser = await extractAuthUser(req);
+  if (!authUser) {
+    return sendError(res, 401, 'Authentication required');
+  }
+  if (!['GP', 'Admin'].includes(authUser.role)) {
+    return sendError(res, 403, 'GP or Admin role required');
+  }
+
   const url = new URL(req.url, 'http://localhost');
   const status = url.searchParams.get('status');
   const limit = parseInt(url.searchParams.get('limit') || '50', 10);
 
   try {
-    const where = status ? { status } : {};
+    // SECURITY: Org isolation - only show intakes for user's organization
+    const where = {
+      ...(status ? { status } : {}),
+      organizationId: authUser.organizationId
+    };
 
     const intakes = await prisma.emailIntake.findMany({
       where,
@@ -489,8 +505,10 @@ export async function handleListEmailIntakes(req, res) {
 /**
  * Get single email intake details
  * GET /api/email-intake/:id
+ *
+ * T3.1 (P3 Security Sprint): Added org isolation check
  */
-export async function handleGetEmailIntake(req, res, intakeId) {
+export async function handleGetEmailIntake(req, res, intakeId, authUser) {
   try {
     const intake = await prisma.emailIntake.findUnique({
       where: { id: intakeId },
@@ -501,6 +519,11 @@ export async function handleGetEmailIntake(req, res, intakeId) {
 
     if (!intake) {
       return sendError(res, 404, 'Email intake not found');
+    }
+
+    // SECURITY: Enforce organization isolation
+    if (intake.organizationId && intake.organizationId !== authUser.organizationId) {
+      return sendError(res, 403, 'Access denied');
     }
 
     return sendJson(res, 200, {
@@ -516,8 +539,10 @@ export async function handleGetEmailIntake(req, res, intakeId) {
 /**
  * Retry failed email intake
  * POST /api/email-intake/:id/retry
+ *
+ * T3.1 (P3 Security Sprint): Added org isolation check
  */
-export async function handleRetryEmailIntake(req, res, intakeId) {
+export async function handleRetryEmailIntake(req, res, intakeId, authUser) {
   try {
     const intake = await prisma.emailIntake.findUnique({
       where: { id: intakeId },
@@ -526,6 +551,11 @@ export async function handleRetryEmailIntake(req, res, intakeId) {
 
     if (!intake) {
       return sendError(res, 404, 'Email intake not found');
+    }
+
+    // SECURITY: Enforce organization isolation
+    if (intake.organizationId && intake.organizationId !== authUser.organizationId) {
+      return sendError(res, 403, 'Access denied');
     }
 
     if (intake.status !== 'FAILED') {

@@ -1,4 +1,9 @@
 {
+  "_meta": {
+    "source": "POST /api/deals",
+    "schema": "createDealRequestSchema",
+    "createdAt": "2026-01-21"
+  },
   "_comment": "Request to create a new deal - validates against createDealRequestSchema",
   "name": "123 Main Street Acquisition",
   "profile": {

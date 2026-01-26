@@ -513,11 +513,36 @@ export async function handleHomeData(req, res, authUser) {
             assignedToMe: true
           });
         } catch (e) {
-          // Skip deals that fail to fetch
+          // Skip deals that fail to fetch from kernel
         }
       }
     } catch (error) {
       console.error("[Home] Failed to build inbox items:", error.message);
+    }
+
+    // Fallback: If no inbox items from kernel, use store profiles with urgency data
+    if (inboxItems.length === 0 && store.dealProfiles?.length > 0) {
+      console.log("[Home] Using store profiles as fallback for decision cards");
+      for (const profileEntry of store.dealProfiles.slice(0, 10)) {
+        const profile = profileEntry.profile || {};
+        const urgency = profile._urgency || 'ready';
+        const summary = profile._summary || `${profile.name || 'Deal'} - ${profile.state || 'Active'}`;
+
+        // Map urgency to status
+        let status = 'ready';
+        if (urgency === 'blocked' || urgency === 'urgent') status = 'urgent';
+        else if (urgency === 'warning' || urgency === 'attention') status = 'warning';
+
+        inboxItems.push({
+          dealId: profileEntry.dealId,
+          dealName: profile.name || profileEntry.dealId,
+          lifecycle_state: profile.state || 'ACTIVE',
+          truth_health: status === 'urgent' ? 'danger' : status === 'warning' ? 'warning' : 'healthy',
+          primary_blocker: status === 'urgent' ? summary : null,
+          next_action: { actionType: 'REVIEW', label: 'Review deal' },
+          assignedToMe: true
+        });
+      }
     }
 
     // Build response based on role

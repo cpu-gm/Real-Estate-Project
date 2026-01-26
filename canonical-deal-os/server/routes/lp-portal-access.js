@@ -9,6 +9,13 @@ import { getPrisma } from "../db.js";
 import { deleteCache, deleteCacheByPrefix } from "../runtime.js";
 import crypto from "node:crypto";
 import { buildLPStatement, requireLPDealAccess } from "../services/lp-statement-service.js";
+import { readStore } from "../store.js";
+import { checkRateLimit, logSecurityEvent } from "../services/rate-limiter.js";
+import { kernelFetchJson } from "../kernel.js";
+import { GenerateLPMagicLinkSchema } from "../middleware/route-schemas.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+
+const KERNEL_BASE_URL = process.env.KERNEL_API_URL || 'http://localhost:3001';
 
 // ============================================================================
 // LOGGING UTILITIES
@@ -64,16 +71,56 @@ function generatePortalToken() {
  * Generate magic link for LP portal access
  * POST /api/lp/portal/magic-link
  * Body: { lpActorId, dealId? }
+ *
+ * T1.2/T1.3 (P1 Security Sprint): Now requires authentication and org isolation
+ * - authUser is passed from dispatch (validated JWT identity)
+ * - Verifies the LP's deal belongs to user's organization
  */
-export async function handleGenerateMagicLink(req, res, readJsonBody, resolveUserId) {
-  const body = await readJsonBody(req);
-
-  if (!body?.lpActorId) {
-    return sendError(res, 400, "lpActorId is required");
+export async function handleGenerateMagicLink(req, res, readJsonBody, authUser) {
+  // T1.2: Require authentication
+  if (!authUser) {
+    log('Unauthenticated LP portal magic link generation attempt');
+    return sendError(res, 401, "Authentication required");
   }
 
+  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+             req.socket?.remoteAddress ||
+             "unknown";
+
+  // Rate limiting (T1.4)
+  const rateLimitResult = await checkRateLimit(`${authUser.id}:${ip}`, 'magic-links:create');
+  if (!rateLimitResult.allowed) {
+    log('Rate limit exceeded for LP portal magic link generation', {
+      userId: authUser.id,
+      ip,
+      attempts: rateLimitResult.attempts
+    });
+    res.setHeader("Retry-After", rateLimitResult.retryAfterSeconds);
+    return sendJson(res, 429, {
+      error: 'Too many magic link creation attempts',
+      message: `Please try again in ${rateLimitResult.retryAfterSeconds} seconds`,
+      retryAfterSeconds: rateLimitResult.retryAfterSeconds
+    });
+  }
+
+  const validationLog = createValidationLogger('handleGenerateMagicLink');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
+
+  // Validate with Zod schema
+  const parseResult = GenerateLPMagicLinkSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
+  }
+
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
+
   const prisma = getPrisma();
-  const userId = resolveUserId(req);
 
   // Verify LP actor exists
   const lpActor = await prisma.lPActor.findUnique({
@@ -81,6 +128,51 @@ export async function handleGenerateMagicLink(req, res, readJsonBody, resolveUse
   });
 
   if (!lpActor) {
+    return sendError(res, 404, "LP not found");
+  }
+
+  // T1.2: Organization isolation - verify LP's deal belongs to user's org
+  let deal;
+  try {
+    deal = await kernelFetchJson(`${KERNEL_BASE_URL}/deals/${lpActor.dealId}`);
+  } catch (error) {
+    log('LP portal magic link for non-existent deal', {
+      lpActorId: body.lpActorId,
+      dealId: lpActor.dealId,
+      userId: authUser.id
+    });
+    return sendError(res, 404, "Deal not found");
+  }
+
+  if (deal.organizationId && deal.organizationId !== authUser.organizationId) {
+    log('Cross-org LP portal magic link generation blocked', {
+      lpActorId: body.lpActorId,
+      dealId: lpActor.dealId,
+      dealOrgId: deal.organizationId,
+      userOrgId: authUser.organizationId,
+      userId: authUser.id,
+      ip
+    });
+
+    // Log security event
+    await logSecurityEvent({
+      type: 'CROSS_ORG_ACCESS_BLOCKED',
+      identifier: authUser.id,
+      endpoint: 'lp-portal:magic-link',
+      allowed: false,
+      actorId: authUser.id,
+      dealId: lpActor.dealId,
+      ipAddress: ip,
+      userAgent: req.headers["user-agent"],
+      metadata: {
+        dealOrgId: deal.organizationId,
+        userOrgId: authUser.organizationId,
+        action: 'generate_lp_portal_magic_link',
+        lpActorId: body.lpActorId
+      }
+    });
+
+    // Return 404 to hide existence
     return sendError(res, 404, "LP not found");
   }
 
@@ -107,7 +199,26 @@ export async function handleGenerateMagicLink(req, res, readJsonBody, resolveUse
   const baseUrl = process.env.BFF_PUBLIC_URL || "http://localhost:8787";
   const magicLink = `${baseUrl}/lp-portal?token=${token}`;
 
-  console.log(`[LP Portal Access] Generated magic link for ${lpActor.entityName} (${lpActor.email})`);
+  // Log successful magic link creation (T1.4)
+  await logSecurityEvent({
+    type: 'LP_PORTAL_MAGIC_LINK_CREATED',
+    identifier: lpActor.email,
+    endpoint: 'lp-portal:magic-link',
+    allowed: true,
+    actorId: authUser.id,
+    dealId: lpActor.dealId,
+    ipAddress: ip,
+    userAgent: req.headers["user-agent"],
+    metadata: {
+      lpActorId: lpActor.id,
+      sessionId: session.id
+    }
+  });
+
+  log(`Generated magic link for ${lpActor.entityName} (${lpActor.email})`, {
+    createdBy: authUser.id,
+    lpActorId: lpActor.id
+  });
 
   sendJson(res, 201, {
     magicLink,
@@ -523,13 +634,14 @@ export async function handleGetMyInvestments(req, res, authUser) {
     hasShareClassData: lpActors.some(la => la.shareClass)
   });
 
+  // Get deal information from store (Deal model lives in Kernel, not BFF)
+  const store = await readStore();
+
   // Get deal information for each LP actor
   const investments = await Promise.all(
     lpActors.map(async (la) => {
-      const deal = await prisma.deal.findUnique({
-        where: { id: la.dealId },
-        select: LP_VISIBLE_DEAL_FIELDS
-      });
+      // Use store.dealIndex instead of prisma.deal (Deal model only exists in Kernel)
+      const deal = store.dealIndex.find((d) => d.id === la.dealId);
 
       return {
         id: la.id,
@@ -621,11 +733,9 @@ export async function handleGetMyInvestmentDetail(req, res, authUser, dealId) {
     shareClass: lpActor.shareClass?.code || 'NONE'
   });
 
-  // Get deal information (filtered to LP-visible fields only)
-  const deal = await prisma.deal.findUnique({
-    where: { id: dealId },
-    select: LP_VISIBLE_DEAL_FIELDS
-  });
+  // Get deal information from store (Deal model lives in Kernel, not BFF)
+  const store = await readStore();
+  const deal = store.dealIndex.find((d) => d.id === dealId);
 
   sendJson(res, 200, {
     deal: {

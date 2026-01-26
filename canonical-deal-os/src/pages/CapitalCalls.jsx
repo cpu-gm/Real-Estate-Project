@@ -8,6 +8,7 @@ import {
   Loader2, AlertCircle, CheckCircle2, Clock, Send, X,
   ArrowLeft
 } from 'lucide-react';
+import UrgencyBadge, { calculateUrgencyLevel } from '@/components/UrgencyBadge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -94,7 +95,17 @@ function CapitalCallRow({ call, deal, onIssue, onMarkFunded, onExpand, isExpande
           {formatCurrency(call.totalAmount)}
         </td>
         <td className="py-4 px-4">
-          {formatDate(call.dueDate)}
+          <div className="flex items-center gap-2">
+            <span>{formatDate(call.dueDate)}</span>
+            {call.dueDate && call.status !== 'FUNDED' && call.status !== 'CANCELLED' && (
+              <UrgencyBadge
+                dueDate={call.dueDate}
+                size="sm"
+                showIcon={true}
+                showCountdown={false}
+              />
+            )}
+          </div>
         </td>
         <td className="py-4 px-4">
           <Badge className={cn("gap-1", config.color)}>

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Open Listing Agreement</title>
+  <style>
+    body { font-family: 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; max-width: 8.5in; margin: 0 auto; padding: 1in; }
+    .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 25px; }
+    .header h1 { font-size: 16pt; margin: 0; text-transform: uppercase; }
+    .section { margin-bottom: 20px; }
+    .section-title { font-weight: bold; text-decoration: underline; margin-bottom: 10px; }
+    .field { margin-bottom: 8px; }
+    .field-label { font-weight: bold; }
+    .signature-line { border-bottom: 1px solid #333; min-width: 200px; display: inline-block; margin: 0 10px; }
+    .highlight { background-color: #ffffcc; padding: 10px; border: 1px solid #ccc; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Open Listing Agreement</h1>
+    <p>Non-Exclusive Commercial Real Estate Listing</p>
+  </div>
+
+  <div class="highlight">
+    <strong>NOTICE:</strong> This is a non-exclusive listing agreement. Seller may engage multiple brokers and sell the property directly without obligation to pay commission unless Broker procures the buyer.
+  </div>
+
+  <div class="section">
+    <p><strong>THIS AGREEMENT</strong> is entered into between:</p>
+    <div class="field">
+      <span class="field-label">SELLER:</span> {{SELLER_NAME}} ("Seller")
+    </div>
+    <div class="field">
+      <span class="field-label">BROKER:</span> {{BROKER_NAME}} ("Broker")
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">1. PROPERTY</div>
+    <p>Seller authorizes Broker, on a non-exclusive basis, to offer for sale:</p>
+    <div class="field">
+      <span class="field-label">Property Address:</span> {{PROPERTY_ADDRESS}}
+    </div>
+    <div class="field">
+      <span class="field-label">Property Type:</span> {{PROPERTY_TYPE}}
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">2. LISTING PRICE</div>
+    <p>Seller authorizes Broker to market the Property at <strong>{{LISTING_PRICE}}</strong>.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">3. TERM</div>
+    <p>This Agreement is effective from <strong>{{START_DATE}}</strong> to <strong>{{END_DATE}}</strong>.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">4. COMMISSION</div>
+    <p>Seller agrees to pay Broker a commission of <strong>{{COMMISSION}}</strong> ONLY if Broker is the procuring cause of a completed sale.</p>
+    <p>"Procuring cause" means Broker introduced the buyer to the Property and the buyer's interest was maintained through closing.</p>
+    <p><strong>No commission is due if:</strong></p>
+    <ul>
+      <li>Seller sells the Property directly without Broker's involvement;</li>
+      <li>Another broker procures the buyer;</li>
+      <li>A buyer introduced by Broker does not complete the purchase.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">5. NON-EXCLUSIVE NATURE</div>
+    <p>Seller expressly reserves the right to:</p>
+    <ul>
+      <li>List the Property with other brokers;</li>
+      <li>Sell the Property directly without broker assistance;</li>
+      <li>Terminate this Agreement at any time with written notice.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">6. SIGNATURES</div>
+    <p>Executed as of the dates below:</p>
+    <br>
+    <div>
+      <strong>SELLER:</strong><br><br>
+      Signature: <span class="signature-line"></span> Date: <span class="signature-line"></span>
+      <br>Print Name: {{SELLER_NAME}}
+    </div>
+    <br><br>
+    <div>
+      <strong>BROKER:</strong><br><br>
+      Signature: <span class="signature-line"></span> Date: <span class="signature-line"></span>
+      <br>Print Name: {{BROKER_NAME}}
+    </div>
+  </div>
+</body>
+</html>

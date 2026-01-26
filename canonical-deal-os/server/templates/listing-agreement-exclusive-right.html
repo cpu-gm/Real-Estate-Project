@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Exclusive Right to Sell Listing Agreement</title>
+  <style>
+    body { font-family: 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; max-width: 8.5in; margin: 0 auto; padding: 1in; }
+    .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 25px; }
+    .header h1 { font-size: 16pt; margin: 0; text-transform: uppercase; }
+    .section { margin-bottom: 20px; }
+    .section-title { font-weight: bold; text-decoration: underline; margin-bottom: 10px; }
+    .field { margin-bottom: 8px; }
+    .field-label { font-weight: bold; }
+    .signature-line { border-bottom: 1px solid #333; min-width: 200px; display: inline-block; margin: 0 10px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Exclusive Right to Sell Listing Agreement</h1>
+    <p>Commercial Real Estate</p>
+  </div>
+
+  <div class="section">
+    <p><strong>THIS AGREEMENT</strong> is entered into between:</p>
+    <div class="field">
+      <span class="field-label">SELLER:</span> {{SELLER_NAME}} ("Seller")
+    </div>
+    <div class="field">
+      <span class="field-label">BROKER:</span> {{BROKER_NAME}} ("Broker")
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">1. PROPERTY</div>
+    <p>Seller hereby grants Broker the exclusive right to sell the following property:</p>
+    <div class="field">
+      <span class="field-label">Property Address:</span> {{PROPERTY_ADDRESS}}
+    </div>
+    <div class="field">
+      <span class="field-label">Property Type:</span> {{PROPERTY_TYPE}}
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">2. LISTING PRICE</div>
+    <p>The property shall be listed at an asking price of <strong>{{LISTING_PRICE}}</strong>, subject to negotiation.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">3. TERM</div>
+    <p>This Agreement shall commence on <strong>{{START_DATE}}</strong> and expire on <strong>{{END_DATE}}</strong>, unless extended by written agreement.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">4. COMMISSION</div>
+    <p>Upon the sale, exchange, or transfer of the Property during the term of this Agreement, Seller agrees to pay Broker a commission of <strong>{{COMMISSION}}</strong> of the gross sale price.</p>
+    <p>The commission shall be due and payable at closing. Broker's commission is earned if:</p>
+    <ul>
+      <li>Broker procures a ready, willing, and able buyer;</li>
+      <li>Seller accepts an offer to purchase;</li>
+      <li>Any sale, exchange, or transfer occurs during the listing term, regardless of who procures the buyer.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">5. BROKER'S DUTIES</div>
+    <p>Broker agrees to:</p>
+    <ul>
+      <li>Use reasonable efforts to market and sell the Property;</li>
+      <li>Present all offers to Seller promptly;</li>
+      <li>Assist in negotiating terms acceptable to Seller;</li>
+      <li>Maintain confidentiality regarding Seller's financial information.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">6. SELLER'S DUTIES</div>
+    <p>Seller agrees to:</p>
+    <ul>
+      <li>Cooperate with Broker in showing and marketing the Property;</li>
+      <li>Refer all inquiries to Broker;</li>
+      <li>Provide accurate information about the Property;</li>
+      <li>Execute documents necessary for closing.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">7. SIGNATURES</div>
+    <p>The parties have executed this Agreement as of the dates indicated below.</p>
+    <br>
+    <div>
+      <strong>SELLER:</strong><br><br>
+      Signature: <span class="signature-line"></span> Date: <span class="signature-line"></span>
+      <br>Print Name: {{SELLER_NAME}}
+    </div>
+    <br><br>
+    <div>
+      <strong>BROKER:</strong><br><br>
+      Signature: <span class="signature-line"></span> Date: <span class="signature-line"></span>
+      <br>Print Name: {{BROKER_NAME}}
+      <br>Firm: {{BROKER_FIRM}}
+    </div>
+  </div>
+</body>
+</html>

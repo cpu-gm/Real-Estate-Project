@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 const DEFAULT_PORT = Number(process.env.BFF_PORT ?? 8787);
 
 const stripTrailingSlash = (value) => {
@@ -21,6 +23,22 @@ const WEBHOOK_URL = stripTrailingSlash(process.env.BFF_LP_NOTIFICATION_WEBHOOK_U
 const WEBHOOK_SECRET = process.env.BFF_LP_NOTIFICATION_WEBHOOK_SECRET?.trim();
 const WEBHOOK_HEADER_NAME =
   process.env.BFF_LP_NOTIFICATION_WEBHOOK_HEADER ?? "X-LP-Webhook-Secret";
+
+// HMAC signature for secure webhook delivery (n8n integration)
+const WEBHOOK_HMAC_SECRET = process.env.BFF_LP_NOTIFICATION_WEBHOOK_HMAC_SECRET?.trim();
+
+/**
+ * Generate HMAC-SHA256 signature for webhook payload
+ * @param {object} payload - The webhook payload to sign
+ * @param {string} secret - The HMAC secret key
+ * @returns {string} The signature in format "sha256={hex}"
+ */
+function generateWebhookSignature(payload, secret) {
+  return `sha256=${crypto
+    .createHmac("sha256", secret)
+    .update(JSON.stringify(payload))
+    .digest("hex")}`;
+}
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -171,15 +189,22 @@ export async function emitLpWebhook(eventType, detail = {}) {
     eventType,
     detail,
     timestamp: new Date().toISOString(),
-    source: "canonical-bff"
+    source: "canonical-bff",
+    version: "1.0"
   };
 
   const headers = {
     "Content-Type": "application/json"
   };
 
+  // Legacy: plain secret header (backward compatibility)
   if (isString(WEBHOOK_SECRET)) {
     headers[WEBHOOK_HEADER_NAME] = WEBHOOK_SECRET;
+  }
+
+  // New: HMAC signature for secure n8n integration
+  if (isString(WEBHOOK_HMAC_SECRET)) {
+    headers["X-Webhook-Signature"] = generateWebhookSignature(body, WEBHOOK_HMAC_SECRET);
   }
 
   try {
@@ -193,6 +218,8 @@ export async function emitLpWebhook(eventType, detail = {}) {
       console.error(
         `[LP Onboarding] Webhook ${eventType} failed (${response.status}): ${responseText}`
       );
+    } else {
+      console.log(`[LP Onboarding] Webhook ${eventType} sent successfully`);
     }
   } catch (error) {
     console.error(

@@ -11,6 +11,7 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import { sendBrokerInquiryNotification } from './email-service.js';
 
 const prisma = new PrismaClient();
 
@@ -540,15 +541,27 @@ class DistributionService {
       data: { responseId: response.id }
     });
 
-    // Log event (get deal for org ID)
+    // Log event (get deal for org ID and broker info)
     const dealDraft = await prisma.dealDraft.findUnique({
-      where: { id: dealDraftId }
+      where: { id: dealDraftId },
+      include: {
+        brokers: {
+          where: { status: 'ACCEPTED' },
+          select: { userId: true }
+        }
+      }
     });
 
     await this._logEvent(dealDraftId, dealDraft.organizationId, 'BUYER_RESPONSE_SUBMITTED', {
       responseId: response.id,
       responseType: responseData.response
     }, actor);
+
+    // Create notification for broker(s) when buyer expresses interest
+    if (responseData.response === RESPONSE_TYPES.INTERESTED ||
+        responseData.response === RESPONSE_TYPES.INTERESTED_WITH_CONDITIONS) {
+      await this._notifyBrokersOfInterest(dealDraft, response, actor);
+    }
 
     debugLog('submitResponse', 'Response submitted', { responseId: response.id });
     return response;
@@ -698,6 +711,83 @@ class DistributionService {
         actorRole: actor.role || 'BROKER'
       }
     });
+  }
+
+  /**
+   * Notify brokers when a buyer expresses interest
+   * @private
+   */
+  async _notifyBrokersOfInterest(dealDraft, response, buyer) {
+    debugLog('_notifyBrokersOfInterest', 'Creating broker notifications', {
+      dealDraftId: dealDraft.id,
+      brokerCount: dealDraft.brokers?.length || 0,
+      buyerId: buyer.id
+    });
+
+    if (!dealDraft.brokers || dealDraft.brokers.length === 0) {
+      debugLog('_notifyBrokersOfInterest', 'No brokers to notify');
+      return;
+    }
+
+    const questionsArray = response.questionsForBroker
+      ? (typeof response.questionsForBroker === 'string'
+          ? JSON.parse(response.questionsForBroker)
+          : response.questionsForBroker)
+      : [];
+    const hasQuestions = questionsArray && questionsArray.length > 0;
+    const notificationType = hasQuestions ? 'new_buyer_inquiry_with_questions' : 'new_buyer_inquiry';
+
+    for (const broker of dealDraft.brokers) {
+      try {
+        // Get broker user info for email
+        const brokerUser = await prisma.authUser.findUnique({
+          where: { id: broker.userId }
+        });
+
+        // Create in-app notification
+        await prisma.notification.create({
+          data: {
+            userId: broker.userId,
+            type: notificationType,
+            title: hasQuestions
+              ? `New inquiry with questions from ${buyer.name || buyer.email}`
+              : `New interested buyer: ${buyer.name || buyer.email}`,
+            body: `${buyer.name || buyer.email} expressed interest in ${dealDraft.propertyName || 'your listing'}${hasQuestions ? ' and has questions for you' : ''}.`,
+            dealId: dealDraft.id,
+            sourceUserId: buyer.id,
+            sourceUserName: buyer.name || buyer.email,
+            actionUrl: `/broker/deal/${dealDraft.id}?tab=buyers`,
+            isRead: false
+          }
+        });
+        debugLog('_notifyBrokersOfInterest', 'In-app notification created for broker', { brokerId: broker.userId });
+
+        // Send email notification
+        if (brokerUser?.email) {
+          const emailResult = await sendBrokerInquiryNotification({
+            toEmail: brokerUser.email,
+            brokerName: brokerUser.name || null,
+            propertyName: dealDraft.propertyName,
+            buyerName: buyer.name || buyer.email,
+            buyerFirm: buyer.organizationName || null,
+            buyerEmail: buyer.email,
+            responseType: response.response,
+            questionsCount: questionsArray.length,
+            dealDraftId: dealDraft.id
+          });
+          debugLog('_notifyBrokersOfInterest', 'Email notification sent', {
+            brokerId: broker.userId,
+            sent: emailResult.sent
+          });
+        }
+      } catch (err) {
+        // Don't fail the response if notification creation fails
+        debugLog('_notifyBrokersOfInterest', 'Failed to create notification', {
+          brokerId: broker.userId,
+          error: err.message
+        });
+      }
+    }
   }
 }
 

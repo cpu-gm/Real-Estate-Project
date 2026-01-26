@@ -3,7 +3,14 @@
  *
  * Logs all requests with timing and captures errors for debugging.
  * Recent errors are stored in memory for the debug status endpoint.
+ *
+ * Provides withErrorHandling() for global error handling with ApiError support.
  */
+
+import crypto from 'crypto';
+import { ApiError, isApiError } from '../lib/api-error.js';
+import { logErrorForClaude } from '../lib/error-log.js';
+import { writeDetailedErrorLog } from '../lib/error-context.js';
 
 const MAX_RECENT_ERRORS = 100;
 const recentErrors = [];
@@ -167,4 +174,146 @@ export function withLogging(handler, routeName = null) {
       }
     }
   };
+}
+
+/**
+ * Global error handling wrapper with ApiError support
+ *
+ * Wraps a request handler to:
+ * - Catch ApiError and send standardized response
+ * - Catch Zod errors and convert to ApiError
+ * - Catch unexpected errors, log stack, return safe 500
+ * - Add X-Request-Id header for tracing
+ *
+ * @param {Function} handler - Async request handler (req, res) => Promise
+ * @param {string} [routeName] - Optional route name for logging
+ */
+export function withErrorHandling(handler, routeName = null) {
+  return async (req, res) => {
+    const requestId = crypto.randomUUID().slice(0, 8);
+    const start = Date.now();
+    const method = req.method;
+    const path = routeName || req.url?.split('?')[0] || '/';
+
+    // Attach requestId to request for downstream use
+    req.requestId = requestId;
+
+    // Attach request to response so sendError() can access it for logging
+    res._req = req;
+
+    requestStats.total++;
+
+    // Track by path
+    if (!requestStats.byPath.has(path)) {
+      requestStats.byPath.set(path, { count: 0, errors: 0, totalLatency: 0 });
+    }
+    const pathStats = requestStats.byPath.get(path);
+    pathStats.count++;
+
+    try {
+      await handler(req, res);
+
+      // Track successful requests
+      if (!res.headersSent || res.statusCode < 400) {
+        requestStats.successful++;
+      }
+    } catch (error) {
+      const latency = Date.now() - start;
+
+      requestStats.failed++;
+      pathStats.errors++;
+
+      // Handle ApiError (expected errors with typed codes)
+      if (isApiError(error)) {
+        logErrorToConsole(method, path, error.status, error.message, latency, requestId);
+        const errorData = {
+          requestId,
+          method,
+          path,
+          status: error.status,
+          code: error.code,
+          message: error.message,
+          suggestion: error.suggestion,
+          details: error.details,
+          latency
+        };
+        addRecentError(errorData);
+        logErrorForClaude(errorData);
+        // Write detailed context for Claude (async, don't wait)
+        writeDetailedErrorLog(errorData, req).catch(() => {});
+        return sendApiErrorResponse(res, error, requestId);
+      }
+
+      // Handle Zod errors that slipped through validation helpers
+      if (error.name === 'ZodError') {
+        const apiError = ApiError.fromZodError(error);
+        logErrorToConsole(method, path, 400, 'Validation error', latency, requestId);
+        const errorData = {
+          requestId,
+          method,
+          path,
+          status: 400,
+          code: 'VALIDATION_FAILED',
+          message: apiError.message,
+          details: apiError.details,
+          latency
+        };
+        addRecentError(errorData);
+        logErrorForClaude(errorData);
+        // Write detailed context for Claude (async, don't wait)
+        writeDetailedErrorLog(errorData, req).catch(() => {});
+        return sendApiErrorResponse(res, apiError, requestId);
+      }
+
+      // Unexpected errors - log full stack, return safe message
+      console.error(`[${requestId}] [${method}] ${path} - UNCAUGHT ERROR (${latency}ms):`, error);
+
+      const errorData = {
+        requestId,
+        method,
+        path,
+        status: 500,
+        code: 'INTERNAL_ERROR',
+        message: error.message,
+        latency,
+        stack: error.stack // Always include stack for Claude to analyze
+      };
+      addRecentError({
+        ...errorData,
+        stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined
+      });
+      logErrorForClaude(errorData);
+      // Write detailed context for Claude (async, don't wait)
+      writeDetailedErrorLog(errorData, req).catch(() => {});
+
+      if (!res.headersSent) {
+        const internalError = ApiError.internal(
+          process.env.NODE_ENV !== 'production' ? error.message : 'An unexpected error occurred'
+        );
+        return sendApiErrorResponse(res, internalError, requestId);
+      }
+    }
+  };
+}
+
+/**
+ * Send standardized API error response
+ */
+function sendApiErrorResponse(res, apiError, requestId) {
+  res.writeHead(apiError.status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'X-Request-Id': requestId
+  });
+  res.end(JSON.stringify(apiError.toResponse(requestId)));
+}
+
+/**
+ * Log error to console with consistent format
+ */
+function logErrorToConsole(method, path, status, message, latency, requestId) {
+  const level = status >= 500 ? 'ERROR' : 'WARN';
+  console.error(`[${requestId}] [${level}] [${method}] ${path} - ${status} (${latency}ms): ${message}`);
 }

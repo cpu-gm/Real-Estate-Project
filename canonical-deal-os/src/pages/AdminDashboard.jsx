@@ -44,6 +44,13 @@ import {
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Checkbox } from '@/components/ui/checkbox';
+import { useBulkSelection } from '@/lib/hooks/useBulkSelection';
+import { BulkActionBar, BulkProgressModal } from '@/components/bulk';
+import { createLogger } from '@/lib/debug-logger';
+import toast from 'react-hot-toast';
+
+const logger = createLogger('ui:bulk-ops');
 
 function getAuthHeaders() {
   const token = localStorage.getItem('auth_token');
@@ -59,6 +66,20 @@ export default function AdminDashboard() {
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [rejectNote, setRejectNote] = useState('');
   const [actionError, setActionError] = useState('');
+
+  // Bulk selection state for verification queue
+  const {
+    selectedIds,
+    isSelected,
+    toggle,
+    toggleRange,
+    selectAll,
+    clearSelection,
+    selectionCount
+  } = useBulkSelection();
+
+  // Bulk progress modal state
+  const [bulkProgress, setBulkProgress] = useState(null);
 
   // Fetch verification queue
   const { data: queueData, isLoading: queueLoading, refetch: refetchQueue } = useQuery({
@@ -157,6 +178,132 @@ export default function AdminDashboard() {
     }
   });
 
+  // Bulk approve mutation
+  const bulkApproveMutation = useMutation({
+    mutationFn: async (requestIds) => {
+      logger.debug('Bulk approve started', { action: 'approve', itemCount: requestIds.length, itemIds: requestIds });
+      setBulkProgress({
+        total: requestIds.length,
+        completed: 0,
+        succeeded: 0,
+        failed: 0,
+        errors: [],
+        isComplete: false
+      });
+
+      const res = await fetch('/api/admin/verification-requests/bulk-approve', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ requestIds })
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || 'Failed to bulk approve');
+      }
+
+      const result = await res.json();
+
+      setBulkProgress({
+        total: requestIds.length,
+        completed: requestIds.length,
+        succeeded: result.succeeded?.length || 0,
+        failed: result.failed?.length || 0,
+        errors: result.failed || [],
+        isComplete: true
+      });
+
+      logger.debug('Bulk approve complete', {
+        action: 'approve',
+        successCount: result.succeeded?.length || 0,
+        failCount: result.failed?.length || 0
+      });
+
+      return result;
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries(['verification-queue']);
+      queryClient.invalidateQueries(['admin-users']);
+      if (result.succeeded?.length > 0) {
+        toast.success(`Approved ${result.succeeded.length} user(s)`);
+      }
+      if (result.failed?.length > 0) {
+        toast.error(`Failed to approve ${result.failed.length} user(s)`);
+      }
+      clearSelection();
+      setActionError('');
+    },
+    onError: (err) => {
+      logger.error('Bulk approve failed', { error: err.message });
+      toast.error('Failed to approve users');
+      setBulkProgress(prev => prev ? { ...prev, isComplete: true } : null);
+      setActionError(err.message);
+    }
+  });
+
+  // Bulk reject mutation
+  const bulkRejectMutation = useMutation({
+    mutationFn: async ({ requestIds, note }) => {
+      logger.debug('Bulk reject started', { action: 'reject', itemCount: requestIds.length, itemIds: requestIds });
+      setBulkProgress({
+        total: requestIds.length,
+        completed: 0,
+        succeeded: 0,
+        failed: 0,
+        errors: [],
+        isComplete: false
+      });
+
+      const res = await fetch('/api/admin/verification-requests/bulk-reject', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ requestIds, note })
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || 'Failed to bulk reject');
+      }
+
+      const result = await res.json();
+
+      setBulkProgress({
+        total: requestIds.length,
+        completed: requestIds.length,
+        succeeded: result.succeeded?.length || 0,
+        failed: result.failed?.length || 0,
+        errors: result.failed || [],
+        isComplete: true
+      });
+
+      logger.debug('Bulk reject complete', {
+        action: 'reject',
+        successCount: result.succeeded?.length || 0,
+        failCount: result.failed?.length || 0
+      });
+
+      return result;
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries(['verification-queue']);
+      queryClient.invalidateQueries(['admin-users']);
+      if (result.succeeded?.length > 0) {
+        toast.success(`Rejected ${result.succeeded.length} user(s)`);
+      }
+      if (result.failed?.length > 0) {
+        toast.error(`Failed to reject ${result.failed.length} user(s)`);
+      }
+      clearSelection();
+      setActionError('');
+    },
+    onError: (err) => {
+      logger.error('Bulk reject failed', { error: err.message });
+      toast.error('Failed to reject users');
+      setBulkProgress(prev => prev ? { ...prev, isComplete: true } : null);
+      setActionError(err.message);
+    }
+  });
+
   function handleApprove(requestId) {
     approveMutation.mutate(requestId);
   }
@@ -175,6 +322,24 @@ export default function AdminDashboard() {
   function handleToggleStatus(user) {
     const newStatus = user.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
     updateStatusMutation.mutate({ userId: user.id, status: newStatus });
+  }
+
+  // Handle bulk approve action
+  function handleBulkApprove() {
+    logger.debug('Bulk approve initiated', { selectedIds: [...selectedIds], count: selectionCount });
+    bulkApproveMutation.mutate([...selectedIds]);
+  }
+
+  // Handle bulk reject action
+  function handleBulkReject() {
+    logger.debug('Bulk reject initiated', { selectedIds: [...selectedIds], count: selectionCount });
+    bulkRejectMutation.mutate({ requestIds: [...selectedIds], note: '' });
+  }
+
+  // Handle select all in queue
+  function handleSelectAllInQueue() {
+    const allRequestIds = queueData?.requests?.map(r => r.id) || [];
+    selectAll(allRequestIds);
   }
 
   const pendingCount = queueData?.requests?.length || 0;
@@ -289,6 +454,19 @@ export default function AdminDashboard() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-12">
+                        <Checkbox
+                          checked={queueData?.requests?.length > 0 && selectionCount === queueData.requests.length}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              handleSelectAllInQueue();
+                            } else {
+                              clearSelection();
+                            }
+                          }}
+                          aria-label="Select all"
+                        />
+                      </TableHead>
                       <TableHead>User</TableHead>
                       <TableHead>Role</TableHead>
                       <TableHead>Requested</TableHead>
@@ -296,8 +474,16 @@ export default function AdminDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {queueData.requests.map((request) => (
-                      <TableRow key={request.id}>
+                    {queueData.requests.map((request, index) => (
+                      <TableRow key={request.id} className={isSelected(request.id) ? 'bg-blue-50' : ''}>
+                        <TableCell>
+                          <Checkbox
+                            checked={isSelected(request.id)}
+                            onCheckedChange={() => toggle(request.id)}
+                            aria-label={`Select ${request.user.name}`}
+                            data-testid="user-checkbox"
+                          />
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center">
@@ -509,6 +695,37 @@ export default function AdminDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Bulk Action Bar */}
+      <BulkActionBar
+        count={selectionCount}
+        actions={[
+          {
+            label: 'Approve All',
+            onClick: handleBulkApprove,
+            icon: CheckCircle2,
+            variant: 'default',
+            'data-testid': 'bulk-approve-button'
+          },
+          {
+            label: 'Reject All',
+            onClick: handleBulkReject,
+            icon: XCircle,
+            variant: 'destructive',
+            'data-testid': 'bulk-reject-button'
+          }
+        ]}
+        onClear={clearSelection}
+      />
+
+      {/* Bulk Progress Modal */}
+      <BulkProgressModal
+        isOpen={!!bulkProgress}
+        onClose={() => setBulkProgress(null)}
+        progress={bulkProgress}
+        title={bulkApproveMutation.isPending ? "Approving Users" : "Rejecting Users"}
+        itemLabel="user"
+      />
     </div>
   );
 }

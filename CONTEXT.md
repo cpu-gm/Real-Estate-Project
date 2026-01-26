@@ -127,6 +127,79 @@ npm --prefix canonical-deal-os run db:seed:auth
 | GP | gp@canonical.com | gp123 |
 | Analyst | analyst@canonical.com | analyst123 |
 
+## Contract System
+
+The platform uses **contract-first development** with Zod schemas as the single source of truth for API shapes.
+
+### What is a Contract?
+
+A contract is a Zod schema that defines the exact shape of data flowing between services:
+- **Request contracts** - What clients send to the API
+- **Response contracts** - What the API returns
+- **Event contracts** - Structure of kernel events
+
+Contracts are validated at runtime (requests/responses) and in CI (fixtures).
+
+### Canonical Schema Locations
+
+| Type | File | Description |
+|------|------|-------------|
+| HTTP Schemas | `canonical-deal-os/src/lib/contracts.js` | All BFF request/response schemas |
+| Event Types | `cre-kernel-phase1/packages/shared/src/index.ts` | EventTypes, DealStates, TruthIndicator |
+| Kernel Events | `contracts/schemas.js` | kernelEventSchema (event envelope) |
+
+**Future location (migration in progress):**
+```
+canonical-deal-os/src/contracts/
+├── http/           # HTTP request/response schemas
+├── events/         # Event payload schemas
+└── index.js        # Canonical export point
+```
+
+### Fixture→Schema Manifest
+
+The manifest at `contracts/manifest.json` maps every fixture to its schema:
+
+```json
+{
+  "http": {
+    "create-deal-request.json": { "schema": "createDealRequestSchema" },
+    "create-deal-response.json": { "schema": "dealSchema" }
+  },
+  "events": {
+    "review-opened.json": { "schema": "kernelEventSchema" }
+  }
+}
+```
+
+**STRICT MODE:** Every fixture MUST be listed. Unmapped fixtures fail CI.
+
+### Validation in CI
+
+```bash
+npm run validate:contracts    # Validate all fixtures
+npm run contracts:check       # Alias for validation
+```
+
+The CI job `validate-contracts` runs on every PR and blocks merge if:
+1. Any fixture is unmapped in manifest.json
+2. Any fixture fails schema validation
+3. Any schema import fails
+
+### Quick Reference
+
+| Task | Command/File |
+|------|--------------|
+| Validate fixtures | `npm run validate:contracts` |
+| Add new schema | `canonical-deal-os/src/lib/contracts.js` |
+| Add new fixture | `fixtures/http/` or `fixtures/events/` |
+| Map fixture→schema | `contracts/manifest.json` |
+| Re-export for validation | `contracts/schemas.js` |
+
+See [contracts/README.md](contracts/README.md) for detailed documentation.
+
+---
+
 ## Related Documentation
 
 | Document | Purpose |

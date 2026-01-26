@@ -1,0 +1,53 @@
+{
+  "_comment": "Response body from POST /api/distribution/create/:dealDraftId",
+  "_schema": "createDistributionResponseSchema",
+  "_source": "canonical-deal-os/src/lib/contracts/distribution.js",
+
+  "distribution": {
+    "id": "dist-abc123",
+    "dealDraftId": "dd-xyz789",
+    "omVersionId": "om-v1-abc123",
+    "listingType": "PRIVATE",
+    "distributedBy": "user-broker-001",
+    "distributedByName": "John Broker",
+    "distributedAt": "2026-01-20T12:00:00.000Z"
+  },
+  "recipients": [
+    {
+      "id": "dr-001",
+      "distributionId": "dist-abc123",
+      "buyerUserId": "buyer-001",
+      "buyerEmail": "buyer1@example.com",
+      "buyerName": "Alice Buyer",
+      "buyerFirmName": "Acme Investments",
+      "matchType": "MANUAL",
+      "matchScore": null,
+      "matchReason": null,
+      "isAnonymous": false,
+      "anonymousLabel": null,
+      "pushedToInboxAt": "2026-01-20T12:00:00.000Z",
+      "viewedAt": null,
+      "viewDurationSec": null,
+      "pagesViewed": null,
+      "responseId": null
+    },
+    {
+      "id": "dr-002",
+      "distributionId": "dist-abc123",
+      "buyerUserId": "buyer-002",
+      "buyerEmail": "buyer2@example.com",
+      "buyerName": "Bob Investor",
+      "buyerFirmName": "Beta Capital",
+      "matchType": "MANUAL",
+      "matchScore": null,
+      "matchReason": null,
+      "isAnonymous": false,
+      "anonymousLabel": null,
+      "pushedToInboxAt": "2026-01-20T12:00:00.000Z",
+      "viewedAt": null,
+      "viewDurationSec": null,
+      "pagesViewed": null,
+      "responseId": null
+    }
+  ]
+}

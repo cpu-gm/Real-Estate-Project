@@ -9,6 +9,9 @@ import { getPrisma } from "../db.js";
 import { extractAuthUser } from "./auth.js";
 import { readStore } from "../store.js";
 import crypto from "node:crypto";
+import { emitLpWebhook } from "../notifications.js";
+import { CreateInvestorUpdateSchema } from "../middleware/route-schemas.js";
+import { createValidationLogger } from "../services/validation-logger.js";
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -176,16 +179,28 @@ export async function handleCreateInvestorUpdate(req, res, dealId, readJsonBody,
   const authUser = await requireGP(req, res);
   if (!authUser) return;
 
-  const body = await readJsonBody(req);
+  const validationLog = createValidationLogger('handleCreateInvestorUpdate');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
 
-  if (!body?.title) {
-    return sendError(res, 400, "title is required");
+  // Validate with Zod schema
+  const parseResult = CreateInvestorUpdateSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
   }
+
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
 
   const prisma = getPrisma();
 
-  // Verify deal exists
-  const deal = await prisma.deal.findUnique({ where: { id: dealId } });
+  // Verify deal exists (check store.dealIndex since Deal model lives in Kernel)
+  const store = await readStore();
+  const deal = store.dealIndex.find((d) => d.id === dealId);
   if (!deal) {
     return sendError(res, 404, "Deal not found");
   }
@@ -303,6 +318,17 @@ export async function handlePublishInvestorUpdate(req, res, dealId, updateId) {
   });
 
   console.log(`[Investor Updates] Published update ${updateId}`);
+
+  // Emit webhook for n8n to send LP notifications
+  await emitLpWebhook("INVESTOR_UPDATE_PUBLISHED", {
+    dealId,
+    updateId,
+    title: update.title,
+    headline: update.headline,
+    period: update.period,
+    updateType: update.updateType,
+    publishedAt: updated.publishedAt.toISOString()
+  });
 
   sendJson(res, 200, {
     update: {

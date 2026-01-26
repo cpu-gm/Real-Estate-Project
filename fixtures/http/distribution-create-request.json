@@ -1,0 +1,8 @@
+{
+  "_comment": "Request body for POST /api/distribution/create/:dealDraftId",
+  "_schema": "createDistributionRequestSchema",
+  "_source": "canonical-deal-os/src/lib/contracts/distribution.js",
+
+  "listingType": "PRIVATE",
+  "recipientIds": ["buyer-001", "buyer-002"]
+}

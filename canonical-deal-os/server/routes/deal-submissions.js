@@ -1,30 +1,54 @@
 import { PrismaClient } from '@prisma/client';
 import { generateMagicLinkToken } from '../services/magic-link-service.js';
+import { createValidationLogger } from '../services/validation-logger.js';
+import { SubmitDealSchema } from '../middleware/route-schemas.js';
 
 const prisma = new PrismaClient();
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload));
+}
 
 /**
  * Submit a deal to an external party (Lender, Counsel)
  * POST /api/deals/:dealId/submit
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleSubmitDeal(req, res, dealId, readJsonBody, resolveUserId) {
+export async function handleSubmitDeal(req, res, dealId, readJsonBody, authUser) {
+  const userId = authUser?.id ?? 'anonymous';  // T1.3: Use validated JWT identity
+  const userName = authUser?.name ?? userId;
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleSubmitDeal');
+  validationLog.beforeValidation(body);
+
+  const parsed = SubmitDealSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const {
+    recipientEmail,
+    recipientName,
+    recipientRole = 'LENDER',
+    message
+  } = parsed.data;
+
   try {
-    const userId = resolveUserId ? resolveUserId(req) : 'anonymous';
-    const userName = req.headers['x-user-name'] || userId;
-    const body = await readJsonBody(req);
-    const {
-      recipientEmail,
-      recipientName,
-      recipientRole = 'LENDER',
-      message
-    } = body || {};
-
-    if (!recipientEmail) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'recipientEmail is required' }));
-      return;
-    }
-
     // Validate role
     const validRoles = ['LENDER', 'COUNSEL'];
     const normalizedRole = recipientRole.toUpperCase();
@@ -187,10 +211,12 @@ export async function handleGetSubmission(req, res, submissionId) {
 /**
  * Resend magic link for a submission
  * POST /api/submissions/:id/resend
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleResendSubmission(req, res, submissionId, resolveUserId) {
+export async function handleResendSubmission(req, res, submissionId, authUser) {
   try {
-    const userId = resolveUserId ? resolveUserId(req) : 'anonymous';
+    const userId = authUser?.id ?? 'anonymous';  // T1.3: Use validated JWT identity
 
     const submission = await prisma.dealSubmission.findUnique({
       where: { id: submissionId }
@@ -248,8 +274,10 @@ export async function handleResendSubmission(req, res, submissionId, resolveUser
 /**
  * Cancel a submission
  * POST /api/submissions/:id/cancel
+ *
+ * T1.3 (P1 Security Sprint): Removed unused resolveUserId param
  */
-export async function handleCancelSubmission(req, res, submissionId, resolveUserId) {
+export async function handleCancelSubmission(req, res, submissionId) {
   try {
     const submission = await prisma.dealSubmission.findUnique({
       where: { id: submissionId }

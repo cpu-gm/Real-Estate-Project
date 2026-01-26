@@ -1,0 +1,453 @@
+{
+  "name": "Snooze Processor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron: Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst runId = crypto.randomUUID();\nconst startTime = Date.now();\nreturn { runId, startTime, jobType: 'SNOOZE' };"
+      },
+      "id": "init-run",
+      "name": "Code: Initialize Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst signature = crypto.createHmac('sha256', secret).update('snooze-scan').digest('hex');\nreturn { signature };"
+      },
+      "id": "hmac-scan",
+      "name": "Code: HMAC for Scan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/scheduler/snooze-scan",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $('Code: HMAC for Scan').item.json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-snoozes",
+      "name": "HTTP: Fetch Expired Snoozes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-snoozes",
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-snoozes",
+      "name": "IF: Has Expired Snoozes?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "expiredSnoozes",
+        "options": {}
+      },
+      "id": "split-snoozes",
+      "name": "Split: Each Snooze",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [1350, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst notification = $json;\n\nconst payload = {\n  notificationId: notification.id\n};\n\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { payload, signature, notificationId: notification.id, userId: notification.userId };"
+      },
+      "id": "prepare-snooze",
+      "name": "Code: Prepare Snooze Expiry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1570, 250]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/scheduler/process-snooze-expiry",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 10,
+              "batchInterval": 500
+            }
+          }
+        }
+      },
+      "id": "process-snooze",
+      "name": "HTTP: Process Snooze Expiry",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "const runId = $('Code: Initialize Run').first().json.runId;\nconst startTime = $('Code: Initialize Run').first().json.startTime;\nconst scanData = $('HTTP: Fetch Expired Snoozes').first().json;\nconst processed = $input.all();\n\nconst results = {\n  snoozesFound: scanData.count || 0,\n  processed: processed.length,\n  emailsSent: processed.filter(p => p.json.emailSent).length,\n  emailsFailed: processed.filter(p => p.json.success && !p.json.emailSent).length,\n  successCount: processed.filter(p => p.json.success).length,\n  failureCount: processed.filter(p => !p.json.success).length\n};\n\nconst durationMs = Date.now() - startTime;\n\nreturn { runId, jobType: 'SNOOZE', results, durationMs };"
+      },
+      "id": "aggregate-results",
+      "name": "Code: Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2010, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst payload = $json;\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { ...payload, signature };"
+      },
+      "id": "hmac-log",
+      "name": "Code: HMAC for Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 250]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/scheduler/log-completion",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ runId: $json.runId, jobType: $json.jobType, results: $json.results, durationMs: $json.durationMs }) }}",
+        "options": {}
+      },
+      "id": "log-completion",
+      "name": "HTTP: Log Completion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 250]
+    },
+    {
+      "parameters": {},
+      "id": "end-success",
+      "name": "End: Success",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2670, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "// No snoozes to process - still log the run\nconst runId = $('Code: Initialize Run').first().json.runId;\nconst startTime = $('Code: Initialize Run').first().json.startTime;\nconst scanData = $('HTTP: Fetch Expired Snoozes').first().json;\n\nconst results = {\n  snoozesFound: scanData.count || 0,\n  processed: 0,\n  emailsSent: 0,\n  emailsFailed: 0,\n  successCount: 0,\n  failureCount: 0\n};\n\nconst durationMs = Date.now() - startTime;\n\nreturn { runId, jobType: 'SNOOZE', results, durationMs };"
+      },
+      "id": "no-snoozes-log",
+      "name": "Code: No Snoozes Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst payload = $json;\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { ...payload, signature };"
+      },
+      "id": "hmac-log-empty",
+      "name": "Code: HMAC for Empty Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/scheduler/log-completion",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ runId: $json.runId, jobType: $json.jobType, results: $json.results, durationMs: $json.durationMs }) }}",
+        "options": {}
+      },
+      "id": "log-empty",
+      "name": "HTTP: Log Empty Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 400]
+    },
+    {
+      "parameters": {},
+      "id": "end-empty",
+      "name": "End: No Snoozes",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2010, 400]
+    }
+  ],
+  "connections": {
+    "Cron: Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Code: Initialize Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Initialize Run": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for Scan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for Scan": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Fetch Expired Snoozes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Fetch Expired Snoozes": {
+      "main": [
+        [
+          {
+            "node": "IF: Has Expired Snoozes?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Has Expired Snoozes?": {
+      "main": [
+        [
+          {
+            "node": "Split: Each Snooze",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code: No Snoozes Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split: Each Snooze": {
+      "main": [
+        [
+          {
+            "node": "Code: Prepare Snooze Expiry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Prepare Snooze Expiry": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Process Snooze Expiry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Process Snooze Expiry": {
+      "main": [
+        [
+          {
+            "node": "Code: Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for Log": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Log Completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Log Completion": {
+      "main": [
+        [
+          {
+            "node": "End: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: No Snoozes Result": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for Empty Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for Empty Log": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Log Empty Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Log Empty Run": {
+      "main": [
+        [
+          {
+            "node": "End: No Snoozes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "Scheduler"
+    },
+    {
+      "name": "Migration"
+    }
+  ],
+  "pinData": {},
+  "versionId": "1"
+}

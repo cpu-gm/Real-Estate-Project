@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { formatDistanceToNow } from "date-fns";
-import { Building2, Sparkles } from "lucide-react";
+import { Building2, Sparkles, Scale } from "lucide-react";
 import { useBuyerInbox } from "@/lib/hooks/useBuyerInbox";
 import { AIScoreBadge } from "@/components/distribution/AIScoreBadge";
 import { Badge } from "@/components/ui/badge";
@@ -73,6 +73,14 @@ export default function BuyerInbox() {
           <Badge className={criteria ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"}>
             {criteria ? "Criteria active" : "No criteria"}
           </Badge>
+          {inbox.length >= 2 && (
+            <Button variant="outline" asChild>
+              <Link to={createPageUrl("DealComparison")}>
+                <Scale className="w-4 h-4 mr-2" />
+                Compare Deals
+              </Link>
+            </Button>
+          )}
           <Button variant="outline" onClick={handleScoreAll} disabled={scoreAllMutation.isLoading}>
             <Sparkles className="w-4 h-4 mr-2" />
             {scoreAllMutation.isLoading ? "Scoring..." : "Score all deals"}

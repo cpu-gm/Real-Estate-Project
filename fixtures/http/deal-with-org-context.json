@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "source": "GET /api/deals/:id",
+    "schema": "dealWithOrgContextSchema",
+    "createdAt": "2026-01-21"
+  },
+  "_comment": "Deal response with organization context - demonstrates multi-tenant isolation invariant",
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "_id_comment": "UUID of the deal",
+  "organizationId": "org-550e8400-e29b-41d4-a716-446655440099",
+  "_organizationId_comment": "REQUIRED for multi-tenant isolation. All queries must filter by this.",
+  "name": "123 Main Street Acquisition",
+  "lifecycle_state": "UnderReview",
+  "stress_mode": false,
+  "truth_health": "healthy",
+  "created_date": "2026-01-21T10:00:00.000Z",
+  "profile": {
+    "asset_type": "Multifamily",
+    "asset_address": "123 Main Street",
+    "asset_city": "Austin",
+    "asset_state": "TX",
+    "purchase_price": 15000000
+  }
+}

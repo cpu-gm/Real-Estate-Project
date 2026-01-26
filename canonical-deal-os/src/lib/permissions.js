@@ -46,6 +46,39 @@ export const PERMISSIONS = {
   LP_DOC_VIEW_OWN: 'lp_doc:view_own',               // View own permitted documents (LP)
   LP_PORTAL_MANAGE: 'lp_portal:manage',             // Manage LP portal access (GP/Admin)
   LP_PORTAL_ACCESS: 'lp_portal:access',             // Access LP portal (LP)
+
+  // Broker/Listing permissions
+  LISTING_CREATE: 'listing:create',                 // Create new listings
+  LISTING_EDIT: 'listing:edit',                     // Edit listings
+  LISTING_DISTRIBUTE: 'listing:distribute',         // Distribute OM to buyers
+  LISTING_VIEW_ALL: 'listing:view_all',             // View all firm listings (brokerage admin)
+  LISTING_VIEW_OWN: 'listing:view_own',             // View own listings
+  OM_GENERATE: 'om:generate',                       // Generate OM from claims
+  OM_APPROVE_BROKER: 'om:approve_broker',           // Broker approval on OM
+  BUYER_REVIEW: 'buyer:review',                     // Review buyer responses
+  COMMISSION_ENTER: 'commission:enter',             // Enter commission terms
+  COMMISSION_VIEW: 'commission:view',               // View commission info
+
+  // GP Counsel / Legal permissions
+  LEGAL_MATTER_CREATE: 'legal:matter_create',       // Create legal matters
+  LEGAL_MATTER_VIEW_ALL: 'legal:matter_view_all',   // View all legal matters
+  LEGAL_MATTER_EDIT: 'legal:matter_edit',           // Edit legal matters
+  LEGAL_MATTER_ASSIGN: 'legal:matter_assign',       // Assign matters to team
+  LEGAL_TIME_ENTRY: 'legal:time_entry',             // Log time entries
+  LEGAL_VENDOR_VIEW: 'legal:vendor_view',           // View vendor CRM
+  LEGAL_VENDOR_MANAGE: 'legal:vendor_manage',       // Manage vendor CRM
+  LEGAL_ENTITY_VIEW: 'legal:entity_view',           // View entity database
+  LEGAL_ENTITY_MANAGE: 'legal:entity_manage',       // Manage entities
+  LEGAL_AI_ANALYSIS: 'legal:ai_analysis',           // Run AI document analysis
+  LEGAL_PLAYBOOK_VIEW: 'legal:playbook_view',       // View contract playbooks
+  LEGAL_PLAYBOOK_MANAGE: 'legal:playbook_manage',   // Manage contract playbooks
+  LEGAL_SHARED_SPACE: 'legal:shared_space',         // Create/manage shared spaces
+  LEGAL_REPORTING: 'legal:reporting',               // View legal reports
+  DD_VIEW_ALL: 'dd:view_all',                       // View all DD types
+  DD_COMMENT: 'dd:comment',                         // Comment on any DD item
+  LP_DATA_VIEW: 'lp:data_view',                     // View full LP data including financials
+  GC_TEAM_OVERSIGHT: 'gc:team_oversight',           // GC team workload view
+  GC_APPROVAL: 'gc:approval',                       // GC approval authority
 };
 
 // Role permission mappings
@@ -85,9 +118,9 @@ export const ROLE_PERMISSIONS = {
   ],
 
   'Lender': [
-    PERMISSIONS.DEAL_VIEW_ALL,            // See all deals submitted to them
-    PERMISSIONS.DEAL_APPROVE,
-    PERMISSIONS.TASK_VIEW_ALL,
+    PERMISSIONS.DEAL_VIEW_ASSIGNED,       // See only deals submitted to them
+    PERMISSIONS.DEAL_APPROVE,             // Approve/reject loan submissions
+    PERMISSIONS.TASK_VIEW_ASSIGNED,       // Only assigned tasks
   ],
 
   'Counsel': [
@@ -141,6 +174,87 @@ export const ROLE_PERMISSIONS = {
     PERMISSIONS.LP_DOC_SET_PERMISSIONS,
     PERMISSIONS.LP_DOC_VIEW_ALL,
     PERMISSIONS.LP_PORTAL_MANAGE,
+  ],
+
+  'Broker': [
+    // Broker can manage listings and distribute to buyers
+    PERMISSIONS.LISTING_CREATE,
+    PERMISSIONS.LISTING_EDIT,
+    PERMISSIONS.LISTING_VIEW_OWN,
+    PERMISSIONS.LISTING_DISTRIBUTE,
+    PERMISSIONS.OM_GENERATE,
+    PERMISSIONS.OM_APPROVE_BROKER,
+    PERMISSIONS.BUYER_REVIEW,
+    PERMISSIONS.COMMISSION_ENTER,
+    PERMISSIONS.COMMISSION_VIEW,
+    PERMISSIONS.DOC_UPLOAD,
+    PERMISSIONS.TASK_VIEW_ASSIGNED,
+  ],
+
+  'Brokerage Admin': [
+    // Brokerage Admin has all Broker permissions plus firm management
+    PERMISSIONS.LISTING_CREATE,
+    PERMISSIONS.LISTING_EDIT,
+    PERMISSIONS.LISTING_VIEW_OWN,
+    PERMISSIONS.LISTING_VIEW_ALL,        // Can see all firm listings
+    PERMISSIONS.LISTING_DISTRIBUTE,
+    PERMISSIONS.OM_GENERATE,
+    PERMISSIONS.OM_APPROVE_BROKER,
+    PERMISSIONS.BUYER_REVIEW,
+    PERMISSIONS.COMMISSION_ENTER,
+    PERMISSIONS.COMMISSION_VIEW,
+    PERMISSIONS.DOC_UPLOAD,
+    PERMISSIONS.TASK_VIEW_ALL,
+    PERMISSIONS.ADMIN_MANAGE_USERS,      // Can manage brokers in firm
+  ],
+
+  'GP Counsel': [
+    // In-house legal counsel - full visibility, advisory role (non-blocking)
+    PERMISSIONS.DEAL_VIEW_ALL,
+    PERMISSIONS.TASK_VIEW_ALL,
+    PERMISSIONS.LP_DOC_VIEW_ALL,
+    PERMISSIONS.LP_DATA_VIEW,             // Full LP data including financials
+    PERMISSIONS.DD_VIEW_ALL,              // All 6 DD types
+    PERMISSIONS.DD_COMMENT,               // Can comment on any DD item
+    PERMISSIONS.LEGAL_MATTER_CREATE,
+    PERMISSIONS.LEGAL_MATTER_VIEW_ALL,
+    PERMISSIONS.LEGAL_MATTER_EDIT,
+    PERMISSIONS.LEGAL_TIME_ENTRY,
+    PERMISSIONS.LEGAL_VENDOR_VIEW,
+    PERMISSIONS.LEGAL_ENTITY_VIEW,
+    PERMISSIONS.LEGAL_AI_ANALYSIS,
+    PERMISSIONS.LEGAL_PLAYBOOK_VIEW,
+    PERMISSIONS.LEGAL_SHARED_SPACE,
+    PERMISSIONS.DOC_UPLOAD,
+    PERMISSIONS.REQUEST_REVIEW,
+  ],
+
+  'General Counsel': [
+    // GC has all GP Counsel permissions plus team oversight
+    PERMISSIONS.DEAL_VIEW_ALL,
+    PERMISSIONS.TASK_VIEW_ALL,
+    PERMISSIONS.LP_DOC_VIEW_ALL,
+    PERMISSIONS.LP_DATA_VIEW,
+    PERMISSIONS.DD_VIEW_ALL,
+    PERMISSIONS.DD_COMMENT,
+    PERMISSIONS.LEGAL_MATTER_CREATE,
+    PERMISSIONS.LEGAL_MATTER_VIEW_ALL,
+    PERMISSIONS.LEGAL_MATTER_EDIT,
+    PERMISSIONS.LEGAL_MATTER_ASSIGN,      // Can assign matters to team
+    PERMISSIONS.LEGAL_TIME_ENTRY,
+    PERMISSIONS.LEGAL_VENDOR_VIEW,
+    PERMISSIONS.LEGAL_VENDOR_MANAGE,      // Manage vendor relationships
+    PERMISSIONS.LEGAL_ENTITY_VIEW,
+    PERMISSIONS.LEGAL_ENTITY_MANAGE,      // Manage entity database
+    PERMISSIONS.LEGAL_AI_ANALYSIS,
+    PERMISSIONS.LEGAL_PLAYBOOK_VIEW,
+    PERMISSIONS.LEGAL_PLAYBOOK_MANAGE,    // Customize playbooks
+    PERMISSIONS.LEGAL_SHARED_SPACE,
+    PERMISSIONS.LEGAL_REPORTING,          // View legal reports
+    PERMISSIONS.DOC_UPLOAD,
+    PERMISSIONS.REQUEST_REVIEW,
+    PERMISSIONS.GC_TEAM_OVERSIGHT,        // Team workload view
+    PERMISSIONS.GC_APPROVAL,              // Approval authority
   ],
 };
 
@@ -208,6 +322,46 @@ export function isOversightRole(role) {
 }
 
 /**
+ * Check if a role is a broker role
+ * @param {string} role - The user's role
+ * @returns {boolean}
+ */
+export function isBrokerRole(role) {
+  return ['Broker', 'Brokerage Admin'].includes(role);
+}
+
+/**
+ * Check if a role is a GP Counsel role (in-house legal)
+ * @param {string} role - The user's role
+ * @returns {boolean}
+ */
+export function isGPCounselRole(role) {
+  return ['GP Counsel', 'General Counsel'].includes(role);
+}
+
+/**
+ * Check if a role is General Counsel (GC with oversight)
+ * @param {string} role - The user's role
+ * @returns {boolean}
+ */
+export function isGeneralCounsel(role) {
+  return role === 'General Counsel';
+}
+
+/**
+ * Get the category for a role
+ * @param {string} role - The user's role
+ * @returns {'SELLER_BUYER' | 'BROKER' | 'INVESTOR' | 'LEGAL' | 'EXTERNAL'}
+ */
+export function getRoleCategory(role) {
+  if (['GP', 'GP Analyst', 'Admin'].includes(role)) return 'SELLER_BUYER';
+  if (['Broker', 'Brokerage Admin'].includes(role)) return 'BROKER';
+  if (['LP'].includes(role)) return 'INVESTOR';
+  if (['GP Counsel', 'General Counsel'].includes(role)) return 'LEGAL';
+  return 'EXTERNAL';
+}
+
+/**
  * Get the label for a role
  * @param {string} role - The role ID
  * @returns {string}
@@ -218,10 +372,14 @@ export function getRoleLabel(role) {
     'GP Analyst': 'GP Analyst',
     'Lender': 'Lender',
     'Counsel': 'External Counsel',
+    'GP Counsel': 'In-House Counsel',
+    'General Counsel': 'General Counsel',
     'Regulator': 'Regulator',
     'Auditor': 'Auditor',
     'LP': 'Limited Partner',
     'Admin': 'Administrator',
+    'Broker': 'Broker',
+    'Brokerage Admin': 'Brokerage Administrator',
   };
   return labels[role] || role;
 }

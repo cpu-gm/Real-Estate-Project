@@ -17,6 +17,8 @@ import { getPrisma } from "../db.js";
 import { extractAuthUser } from "./auth.js";
 import { createDealEvent } from "../services/audit-service.js";
 import { readStore } from "../store.js";
+import { CreateShareClassSchema } from "../middleware/route-schemas.js";
+import { createValidationLogger } from "../services/validation-logger.js";
 
 const LOG_PREFIX = "[ShareClass]";
 
@@ -242,20 +244,30 @@ export async function handleCreateShareClass(req, res, dealId, readJsonBody) {
   const { authUser, dealRecord } = result;
 
   try {
-    const body = await readJsonBody(req);
+    const validationLog = createValidationLogger('handleCreateShareClass');
+    const rawBody = await readJsonBody(req);
+    validationLog.beforeValidation(rawBody);
+
+    // Validate with Zod schema
+    const parseResult = CreateShareClassSchema.safeParse(rawBody ?? {});
+    if (!parseResult.success) {
+      validationLog.validationFailed(parseResult.error.errors);
+      log(`Validation failed`, { errors: parseResult.error.errors });
+      return sendError(res, 400, "Validation failed", {
+        code: 'VALIDATION_FAILED',
+        errors: parseResult.error.errors
+      });
+    }
+
+    const body = parseResult.data;
+    validationLog.afterValidation(body);
+
     log(`Create share class request`, {
       dealId,
       code: body?.code,
       name: body?.name,
       userId: authUser.id
     });
-
-    // Validate input
-    const validationErrors = validateShareClassData(body, false);
-    if (validationErrors.length > 0) {
-      log(`Validation failed`, { errors: validationErrors });
-      return sendError(res, 400, "Validation failed", validationErrors);
-    }
 
     const prisma = getPrisma();
 

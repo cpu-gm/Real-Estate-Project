@@ -1,18 +1,48 @@
 import { PrismaClient } from '@prisma/client';
 import { readStore } from "../store.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+import { CreateReviewRequestSchema, RespondToReviewSchema } from "../middleware/route-schemas.js";
 
 const prisma = new PrismaClient();
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload));
+}
 
 /**
  * Create a review request (Analyst → GP)
  * POST /api/deals/:dealId/review-requests
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleCreateReviewRequest(req, res, dealId, readJsonBody, resolveUserId) {
+export async function handleCreateReviewRequest(req, res, dealId, readJsonBody, authUser) {
+  const userId = authUser?.id ?? 'anonymous';  // T1.3: Use validated JWT identity
+  const userName = authUser?.name ?? userId;
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleCreateReviewRequest');
+  validationLog.beforeValidation(body);
+
+  const parsed = CreateReviewRequestSchema.safeParse(body || {});
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    const userId = resolveUserId ? resolveUserId(req) : 'anonymous';
-    const userName = req.headers['x-user-name'] || userId;
-    const body = await readJsonBody(req);
-    const { message } = body || {};
+    const { message } = parsed.data;
 
     // Check if there's already a pending review for this deal
     const existingPending = await prisma.reviewRequest.findFirst({
@@ -75,8 +105,10 @@ export async function handleCreateReviewRequest(req, res, dealId, readJsonBody, 
 /**
  * List review requests
  * GET /api/review-requests?status=pending&dealId=xxx
+ *
+ * T1.3 (P1 Security Sprint): Removed unused resolveUserId param
  */
-export async function handleListReviewRequests(req, res, resolveUserId) {
+export async function handleListReviewRequests(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const status = url.searchParams.get('status');
@@ -165,20 +197,37 @@ export async function handleGetPendingReviewForDeal(req, res, dealId) {
 /**
  * Respond to a review request (GP approves/rejects/provides feedback)
  * POST /api/review-requests/:id/respond
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleRespondToReview(req, res, requestId, readJsonBody, resolveUserId) {
+export async function handleRespondToReview(req, res, requestId, readJsonBody, authUser) {
+  const userId = authUser?.id ?? 'anonymous';  // T1.3: Use validated JWT identity
+  const userName = authUser?.name ?? userId;
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleRespondToReview');
+  validationLog.beforeValidation(body);
+
+  const parsed = RespondToReviewSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { action, message } = parsed.data;
+
   try {
-    const userId = resolveUserId ? resolveUserId(req) : 'anonymous';
-    const userName = req.headers['x-user-name'] || userId;
-    const body = await readJsonBody(req);
-    const { action, message } = body || {};
-
-    if (!['approve', 'reject', 'feedback'].includes(action)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid action. Must be: approve, reject, or feedback' }));
-      return;
-    }
-
     // Get the review request
     const request = await prisma.reviewRequest.findUnique({
       where: { id: requestId }

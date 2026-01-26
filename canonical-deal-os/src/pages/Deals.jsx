@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { bff } from '@/api/bffClient';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '../utils';
@@ -13,10 +13,12 @@ import {
   Clock,
   Search,
   ArrowUpDown,
-  Filter
+  Filter,
+  UserPlus
 } from 'lucide-react';
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { PageError } from "@/components/ui/page-state";
 import {
@@ -26,6 +28,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useBulkSelection } from '@/lib/hooks/useBulkSelection';
+import { SelectableCard, BulkActionBar, BulkProgressModal } from '@/components/bulk';
+import { UserPicker } from '@/components/UserPicker';
+import { createLogger } from '@/lib/debug-logger';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import toast from 'react-hot-toast';
+
+const logger = createLogger('ui:bulk-ops');
 
 const lifecycleColors = {
   'Draft': 'bg-slate-100 text-slate-700',
@@ -51,14 +68,103 @@ const LIFECYCLE_STATES = ['all', 'Draft', 'Under Review', 'Approved', 'Ready to 
 
 export default function DealsPage() {
   const { currentRole } = useRole();
+  const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
   const [lifecycleFilter, setLifecycleFilter] = useState('all');
   const [sortBy, setSortBy] = useState('updated');
+
+  // Bulk selection state
+  const {
+    selectedIds,
+    isSelected,
+    toggle,
+    toggleRange,
+    selectAll,
+    clearSelection,
+    selectionCount
+  } = useBulkSelection();
+
+  // Bulk assign modal state
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [selectedUser, setSelectedUser] = useState(null);
+
+  // Bulk progress modal state
+  const [bulkProgress, setBulkProgress] = useState(null);
 
   const { data: deals = [], isLoading, error, refetch } = useQuery({
     queryKey: ['deals'],
     queryFn: () => bff.deals.list(),
   });
+
+  // Bulk assign mutation
+  const bulkAssignMutation = useMutation({
+    mutationFn: async ({ dealIds, userId, userName }) => {
+      logger.debug('Bulk assign started', { action: 'assign', itemCount: dealIds.length, itemIds: dealIds });
+      setBulkProgress({
+        total: dealIds.length,
+        completed: 0,
+        succeeded: 0,
+        failed: 0,
+        errors: [],
+        isComplete: false
+      });
+
+      const result = await bff.bulk.assignDeals(dealIds, userId, userName);
+
+      setBulkProgress({
+        total: dealIds.length,
+        completed: dealIds.length,
+        succeeded: result.succeeded?.length || 0,
+        failed: result.failed?.length || 0,
+        errors: result.failed || [],
+        isComplete: true
+      });
+
+      logger.debug('Bulk assign complete', {
+        action: 'assign',
+        successCount: result.succeeded?.length || 0,
+        failCount: result.failed?.length || 0
+      });
+
+      return result;
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['deals'] });
+      if (result.succeeded?.length > 0) {
+        toast.success(`Assigned ${result.succeeded.length} deal(s)`);
+      }
+      if (result.failed?.length > 0) {
+        toast.error(`Failed to assign ${result.failed.length} deal(s)`);
+      }
+      clearSelection();
+      setShowAssignModal(false);
+      setSelectedUser(null);
+    },
+    onError: (error) => {
+      logger.error('Bulk assign failed', { error: error.message });
+      toast.error('Failed to assign deals');
+      setBulkProgress(prev => prev ? { ...prev, isComplete: true } : null);
+    }
+  });
+
+  // Handle bulk assign action
+  const handleBulkAssign = () => {
+    logger.debug('Bulk assign initiated', { selectedIds: [...selectedIds], count: selectionCount });
+    setShowAssignModal(true);
+  };
+
+  // Confirm bulk assign
+  const confirmBulkAssign = () => {
+    if (!selectedUser) {
+      toast.error('Please select a user');
+      return;
+    }
+    bulkAssignMutation.mutate({
+      dealIds: [...selectedIds],
+      userId: selectedUser.id,
+      userName: selectedUser.name || selectedUser.email
+    });
+  };
 
   // Calculate counts for each lifecycle state
   const lifecycleCounts = useMemo(() => {
@@ -234,106 +340,176 @@ export default function DealsPage() {
           </Link>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredAndSortedDeals.map((deal) => {
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-20">
+          {filteredAndSortedDeals.map((deal, index) => {
             const profile = deal.profile ?? {};
             return (
-              <Link
+              <SelectableCard
                 key={deal.id}
-                to={createPageUrl(`DealOverview?id=${deal.id}`)}
-                className="bg-white rounded-xl border border-[#E5E5E5] p-6 hover:border-[#171717] hover:shadow-sm transition-all duration-200 group"
+                id={deal.id}
+                isSelected={isSelected(deal.id)}
+                onToggle={(e) => toggleRange(deal.id, e?.shiftKey)}
               >
-              {/* Stress Mode Banner */}
-              {deal.stress_mode && (
-                <div className="flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-100 rounded-lg mb-4 -mt-2 -mx-2">
-                  <AlertTriangle className="w-4 h-4 text-red-600" />
-                  <span className="text-xs font-medium text-red-700">Stress Mode Active</span>
-                </div>
-              )}
-
-              {/* Header */}
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex-1">
-                  <h3 className="font-semibold text-[#171717] group-hover:text-[#0A0A0A] transition-colors line-clamp-1">
-                    {deal.name}
-                  </h3>
-                  <p className="text-sm text-[#737373] mt-0.5 line-clamp-1">
-                    {profile.asset_address || 'No address'}
-                  </p>
-                </div>
-                <ChevronRight className="w-5 h-5 text-[#E5E5E5] group-hover:text-[#171717] transition-colors flex-shrink-0" />
-              </div>
-
-              {/* Status Row */}
-              <div className="flex items-center gap-2 mb-4">
-                <Badge className={cn("font-medium text-xs", lifecycleColors[deal.lifecycle_state] || 'bg-slate-100 text-slate-700')}>
-                  {deal.lifecycle_state || 'Draft'}
-                </Badge>
-                <TruthHealthIcon health={deal.truth_health || 'healthy'} />
-                {profile.ai_derived && (
-                  <span className="text-[10px] px-2 py-0.5 bg-violet-50 text-violet-600 rounded font-medium">
-                    AI-Derived
-                  </span>
+                <Link
+                  to={createPageUrl(`DealOverview?id=${deal.id}`)}
+                  className="block bg-white rounded-xl border border-[#E5E5E5] p-6 hover:border-[#171717] hover:shadow-sm transition-all duration-200 group"
+                >
+                {/* Stress Mode Banner */}
+                {deal.stress_mode && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-100 rounded-lg mb-4 -mt-2 -mx-2">
+                    <AlertTriangle className="w-4 h-4 text-red-600" />
+                    <span className="text-xs font-medium text-red-700">Stress Mode Active</span>
+                  </div>
                 )}
-              </div>
 
-              {/* Enhanced Metrics */}
-              <div className="grid grid-cols-3 gap-3 pt-4 border-t border-[#F5F5F5]">
-                <div>
-                  <span className="text-[10px] text-[#A3A3A3] uppercase tracking-wider">Purchase</span>
-                  <p className="text-sm font-medium text-[#171717]">
-                    {profile.purchase_price ? `$${(profile.purchase_price / 1000000).toFixed(1)}M` : 'N/A'}
-                  </p>
+                {/* Header */}
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-[#171717] group-hover:text-[#0A0A0A] transition-colors line-clamp-1">
+                      {deal.name}
+                    </h3>
+                    <p className="text-sm text-[#737373] mt-0.5 line-clamp-1">
+                      {profile.asset_address || 'No address'}
+                    </p>
+                  </div>
+                  <ChevronRight className="w-5 h-5 text-[#E5E5E5] group-hover:text-[#171717] transition-colors flex-shrink-0" />
                 </div>
-                <div>
-                  <span className="text-[10px] text-[#A3A3A3] uppercase tracking-wider">LTV</span>
-                  <p className={cn(
-                    "text-sm font-medium",
-                    profile.ltv > 0.75 ? "text-red-600" : profile.ltv > 0.65 ? "text-amber-600" : "text-[#171717]"
-                  )}>
-                    {profile.ltv ? `${(profile.ltv * 100).toFixed(0)}%` : 'N/A'}
-                  </p>
-                </div>
-                <div>
-                  <span className="text-[10px] text-[#A3A3A3] uppercase tracking-wider">DSCR</span>
-                  <p className={cn(
-                    "text-sm font-medium",
-                    profile.dscr < 1.0 ? "text-red-600" : profile.dscr < 1.25 ? "text-amber-600" : "text-green-600"
-                  )}>
-                    {profile.dscr ? `${profile.dscr.toFixed(2)}x` : 'N/A'}
-                  </p>
-                </div>
-              </div>
 
-              {/* Data Quality Indicator */}
-              {profile.ai_derived && !profile.verified && (
-                <div className="mt-3 flex items-center gap-1.5 px-2 py-1 bg-amber-50 rounded-md">
-                  <AlertCircle className="w-3 h-3 text-amber-500" />
-                  <span className="text-[10px] text-amber-700 font-medium">Needs verification</span>
+                {/* Status Row */}
+                <div className="flex items-center gap-2 mb-4">
+                  <Badge className={cn("font-medium text-xs", lifecycleColors[deal.lifecycle_state] || 'bg-slate-100 text-slate-700')}>
+                    {deal.lifecycle_state || 'Draft'}
+                  </Badge>
+                  <TruthHealthIcon health={deal.truth_health || 'healthy'} />
+                  {profile.ai_derived && (
+                    <span className="text-[10px] px-2 py-0.5 bg-violet-50 text-violet-600 rounded font-medium">
+                      AI-Derived
+                    </span>
+                  )}
                 </div>
-              )}
 
-              {/* Updated timestamp */}
-              {deal.updated_date && (
-                <div className="mt-2 text-[10px] text-[#A3A3A3]">
-                  Updated {new Date(deal.updated_date).toLocaleDateString()}
-                </div>
-              )}
-
-              {/* Next Action */}
-              {deal.next_action && (
-                <div className="mt-4 pt-4 border-t border-[#F5F5F5]">
-                  <div className="flex items-center gap-2">
-                    <Clock className="w-3 h-3 text-[#A3A3A3]" />
-                    <span className="text-xs text-[#737373] line-clamp-1">{deal.next_action}</span>
+                {/* Enhanced Metrics */}
+                <div className="grid grid-cols-3 gap-3 pt-4 border-t border-[#F5F5F5]">
+                  <div>
+                    <span className="text-[10px] text-[#A3A3A3] uppercase tracking-wider">Purchase</span>
+                    <p className="text-sm font-medium text-[#171717]">
+                      {profile.purchase_price ? `$${(profile.purchase_price / 1000000).toFixed(1)}M` : 'N/A'}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#A3A3A3] uppercase tracking-wider">LTV</span>
+                    <p className={cn(
+                      "text-sm font-medium",
+                      profile.ltv > 0.75 ? "text-red-600" : profile.ltv > 0.65 ? "text-amber-600" : "text-[#171717]"
+                    )}>
+                      {profile.ltv ? `${(profile.ltv * 100).toFixed(0)}%` : 'N/A'}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#A3A3A3] uppercase tracking-wider">DSCR</span>
+                    <p className={cn(
+                      "text-sm font-medium",
+                      profile.dscr < 1.0 ? "text-red-600" : profile.dscr < 1.25 ? "text-amber-600" : "text-green-600"
+                    )}>
+                      {profile.dscr ? `${profile.dscr.toFixed(2)}x` : 'N/A'}
+                    </p>
                   </div>
                 </div>
-              )}
-              </Link>
+
+                {/* Data Quality Indicator */}
+                {profile.ai_derived && !profile.verified && (
+                  <div className="mt-3 flex items-center gap-1.5 px-2 py-1 bg-amber-50 rounded-md">
+                    <AlertCircle className="w-3 h-3 text-amber-500" />
+                    <span className="text-[10px] text-amber-700 font-medium">Needs verification</span>
+                  </div>
+                )}
+
+                {/* Updated timestamp */}
+                {deal.updated_date && (
+                  <div className="mt-2 text-[10px] text-[#A3A3A3]">
+                    Updated {new Date(deal.updated_date).toLocaleDateString()}
+                  </div>
+                )}
+
+                {/* Next Action */}
+                {deal.next_action && (
+                  <div className="mt-4 pt-4 border-t border-[#F5F5F5]">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-3 h-3 text-[#A3A3A3]" />
+                      <span className="text-xs text-[#737373] line-clamp-1">{deal.next_action}</span>
+                    </div>
+                  </div>
+                )}
+                </Link>
+              </SelectableCard>
             );
           })}
         </div>
       )}
+
+      {/* Bulk Action Bar */}
+      <BulkActionBar
+        count={selectionCount}
+        actions={[
+          {
+            label: 'Assign Analyst',
+            onClick: handleBulkAssign,
+            icon: UserPlus,
+            variant: 'default',
+            testId: 'bulk-assign-button'
+          }
+        ]}
+        onClear={clearSelection}
+      />
+
+      {/* Bulk Assign Modal */}
+      <Dialog open={showAssignModal} onOpenChange={setShowAssignModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Assign Analyst</DialogTitle>
+            <DialogDescription>
+              Select a user to assign to {selectionCount} selected deal{selectionCount !== 1 ? 's' : ''}.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4">
+            <UserPicker
+              value={selectedUser}
+              onSelect={setSelectedUser}
+              placeholder="Search for an analyst..."
+              data-testid="user-picker"
+            />
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowAssignModal(false);
+                setSelectedUser(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmBulkAssign}
+              disabled={!selectedUser || bulkAssignMutation.isPending}
+              data-testid="confirm-assign"
+            >
+              {bulkAssignMutation.isPending ? 'Assigning...' : 'Assign'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Progress Modal */}
+      <BulkProgressModal
+        isOpen={!!bulkProgress}
+        onClose={() => setBulkProgress(null)}
+        progress={bulkProgress}
+        title="Assigning Deals"
+        itemLabel="deal"
+      />
     </div>
   );
 }

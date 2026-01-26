@@ -84,10 +84,9 @@ export async function getOrCreateActorId(dealId, userId, role, kernelBaseUrl) {
     throw new Error("Actor endpoint unavailable");
   }
 
+  // Kernel expects: { name, type, role } - all required fields
   const payloads = [
-    { name: `Canonical ${role}`, type: "HUMAN", role },
-    { name: `Canonical ${role}`, type: "HUMAN", roles: [role] },
-    { name: `Canonical ${role}`, role }
+    { name: `Canonical ${role}`, type: "HUMAN", role }
   ];
 
   let lastError = null;
@@ -196,7 +195,11 @@ const ACTION_IDEMPOTENCY_TTL_MS = Number(
   process.env.BFF_ACTION_IDEMPOTENCY_TTL_MS ?? 60000
 );
 
-export async function handleExplain(req, res, dealId, kernelBaseUrl, resolveUserId, resolveActorRole) {
+/**
+ * T1.3 (P1 Security Sprint): Removed unused resolveUserId/resolveActorRole params
+ * Uses extractAuthUser internally for validated JWT identity
+ */
+export async function handleExplain(req, res, dealId, kernelBaseUrl) {
   // Authentication check
   const authUser = await extractAuthUser(req);
   if (!authUser) {
@@ -260,7 +263,11 @@ export async function handleExplain(req, res, dealId, kernelBaseUrl, resolveUser
   sendJson(res, 200, explainResponseSchema.parse(payload));
 }
 
-export async function handleAction(req, res, dealId, actionType, kernelBaseUrl, readJsonBody, resolveUserId, resolveActorRole, inFlight) {
+/**
+ * T1.3 (P1 Security Sprint): Removed unused resolveUserId/resolveActorRole params
+ * Uses extractAuthUser internally for validated JWT identity
+ */
+export async function handleAction(req, res, dealId, actionType, kernelBaseUrl, readJsonBody, inFlight) {
   // Authentication check
   const authUser = await extractAuthUser(req);
   if (!authUser) {

@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, Info } from "lucide-react";
 import { bff } from "@/api/bffClient";
 import { AIScoreBadge } from "@/components/distribution/AIScoreBadge";
 import { Badge } from "@/components/ui/badge";
@@ -10,11 +10,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/use-toast";
 import { createPageUrl } from "@/utils";
 import { debugLog } from "@/lib/debug";
 import { PageError } from "@/components/ui/page-state";
+import ProvenanceBadge, { ProvenanceLegend } from "@/components/ProvenanceBadge";
 
 const RESPONSE_OPTIONS = [
   { value: "INTERESTED", label: "Interested" },
@@ -67,6 +70,9 @@ export default function BuyerDealView() {
     passNotes: "",
     isConfidential: false
   });
+
+  // Toggle for showing data provenance/source information
+  const [showProvenance, setShowProvenance] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["buyerDeal", dealId],
@@ -261,10 +267,31 @@ export default function BuyerDealView() {
       </Card>
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Offering Memorandum</CardTitle>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center space-x-2">
+              <Switch
+                id="show-provenance"
+                checked={showProvenance}
+                onCheckedChange={setShowProvenance}
+              />
+              <Label htmlFor="show-provenance" className="text-sm cursor-pointer">
+                <span className="flex items-center gap-1">
+                  <Info className="w-3.5 h-3.5" />
+                  Show Data Sources
+                </span>
+              </Label>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
+          {showProvenance && (
+            <div className="mb-4 p-3 bg-slate-50 rounded-lg">
+              <p className="text-xs text-slate-600 mb-2">Data source legend:</p>
+              <ProvenanceLegend />
+            </div>
+          )}
           {omVersion ? (
             <div className="space-y-4">
               {sections.length === 0 ? (
@@ -272,10 +299,30 @@ export default function BuyerDealView() {
               ) : (
                 sections.map((section) => (
                   <div key={section.id || section.title} className="border border-[#E5E5E5] rounded-lg p-4">
-                    <div className="font-medium text-[#171717] mb-2">{section.title || section.id}</div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-medium text-[#171717]">{section.title || section.id}</div>
+                      {showProvenance && section.verificationBadge && (
+                        <ProvenanceBadge badge={section.verificationBadge} source={section.source} />
+                      )}
+                    </div>
                     <pre className="text-xs text-[#525252] whitespace-pre-wrap max-h-40 overflow-hidden">
                       {formatSectionBody(section)}
                     </pre>
+                    {showProvenance && section.claims && section.claims.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-slate-100">
+                        <p className="text-xs text-slate-500 mb-2">Claim sources:</p>
+                        <div className="space-y-1">
+                          {section.claims.map((claim, idx) => (
+                            <div key={idx} className="flex items-center justify-between text-xs">
+                              <span className="text-slate-600">{claim.label || claim.field}</span>
+                              {claim.verificationBadge && (
+                                <ProvenanceBadge badge={claim.verificationBadge} compact />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))
               )}

@@ -7,10 +7,76 @@
 
 import { getPrisma } from "../db.js";
 import { extractAuthUser } from "./auth.js";
+import { logPermissionAction, AUDIT_ACTIONS } from "../middleware/auth.js";
 import { readStore } from "../store.js";
 import crypto from "node:crypto";
 import { createDealEvent, createCapTableSnapshot } from "../services/audit-service.js";
 import { generateCapitalCallNotices } from "../services/document-generator.js";
+import { emitLpWebhook } from "../notifications.js";
+import { createIntegrityLogger, INTEGRITY_OPERATIONS, INVARIANTS } from "../services/integrity-logger.js";
+import { dollarsToCents, allocateCents, validateAllocationSum } from "../services/money.js";
+import { addToOutbox } from "../services/outbox-worker.js";
+import {
+  CreateCapitalCallSchema,
+  UpdateCapitalCallSchema,
+  MarkWireInitiatedSchema,
+  UploadWireProofSchema,
+  MarkFundedSchema
+} from "../middleware/route-schemas.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+import { getIdempotencyStats } from "../middleware/idempotency.js";
+
+/**
+ * Get capital calls summary across all deals for GP's organization
+ * GET /api/capital-calls/summary
+ */
+export async function handleCapitalCallsSummary(req, res, authUser) {
+  if (!authUser) {
+    sendError(res, 401, "Not authenticated");
+    return;
+  }
+
+  const prisma = getPrisma();
+
+  try {
+    // Get all capital calls for deals in the user's organization
+    const capitalCalls = await prisma.capitalCall.findMany({
+      where: {
+        deal: {
+          organizationId: authUser.organizationId
+        }
+      },
+      include: {
+        allocations: true
+      }
+    });
+
+    // Calculate summary stats
+    const totalCalled = capitalCalls
+      .filter(cc => cc.status !== 'DRAFT' && cc.status !== 'CANCELLED')
+      .reduce((sum, cc) => sum + cc.totalAmount, 0);
+
+    const totalFunded = capitalCalls.reduce((sum, cc) => {
+      return sum + cc.allocations
+        .filter(a => a.status === 'FUNDED')
+        .reduce((aSum, a) => aSum + (a.fundedAmount || a.amount || 0), 0);
+    }, 0);
+
+    const pendingCalls = capitalCalls.filter(
+      cc => cc.status !== 'FUNDED' && cc.status !== 'CANCELLED' && cc.status !== 'DRAFT'
+    ).length;
+
+    sendJson(res, 200, {
+      totalCalled,
+      totalFunded,
+      pendingCalls,
+      totalCalls: capitalCalls.length
+    });
+  } catch (error) {
+    console.error('[Capital Calls] Summary error:', error);
+    sendError(res, 500, "Failed to get capital calls summary");
+  }
+}
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -207,125 +273,285 @@ export async function handleGetCapitalCall(req, res, dealId, callId) {
  * Create a capital call (GP only)
  * POST /api/deals/:dealId/capital-calls
  * Body: { title, description?, totalAmount, dueDate, wireInstructions?, purpose }
+ *
+ * Sprint 2: Supports Idempotency-Key header for duplicate prevention
+ * - If Idempotency-Key is provided and matches a previous request, returns cached result
+ * - Idempotency keys are scoped to: organization + dealId + key + payload hash
  */
 export async function handleCreateCapitalCall(req, res, dealId, readJsonBody, userId, userName) {
   const authUser = await requireGP(req, res);
   if (!authUser) return;
 
-  const body = await readJsonBody(req);
+  // Sprint 2: Check for idempotency key
+  const idempotencyKey = req.headers['idempotency-key'] || req.headers['x-idempotency-key'];
 
-  if (!body?.title || !body?.totalAmount || !body?.dueDate) {
-    return sendError(res, 400, "title, totalAmount, and dueDate are required");
+  const validationLog = createValidationLogger('handleCreateCapitalCall');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
+
+  // Sprint 2: Check for existing capital call with same idempotency key
+  if (idempotencyKey) {
+    const prisma = getPrisma();
+    const existingCall = await prisma.capitalCall.findFirst({
+      where: {
+        idempotencyKey,
+        dealId,
+        deal: { organizationId: authUser.organizationId }
+      },
+      include: { allocations: true }
+    });
+
+    if (existingCall) {
+      console.log(`[Capital Calls] Idempotency cache hit for key ${idempotencyKey}`);
+      return sendJson(res, 200, {
+        capitalCall: {
+          id: existingCall.id,
+          dealId: existingCall.dealId,
+          title: existingCall.title,
+          totalAmount: existingCall.totalAmount,
+          dueDate: existingCall.dueDate.toISOString(),
+          status: existingCall.status,
+          allocationCount: existingCall.allocations.length,
+          snapshotId: existingCall.snapshotId
+        },
+        _idempotent: true
+      });
+    }
   }
+
+  // Validate with Zod schema
+  const parseResult = CreateCapitalCallSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
+  }
+
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
 
   const prisma = getPrisma();
 
-  // Verify deal exists
-  const deal = await prisma.deal.findUnique({ where: { id: dealId } });
-  if (!deal) {
-    return sendError(res, 404, "Deal not found");
-  }
-
-  // Get all active LPs for this deal (with share class info for logging)
-  const lpActors = await prisma.lPActor.findMany({
-    where: { dealId, status: 'ACTIVE' },
-    include: { shareClass: { select: { id: true, code: true, name: true } } }
+  // Create integrity logger for this operation
+  const logger = createIntegrityLogger({
+    operation: INTEGRITY_OPERATIONS.CAPITAL_CALL_CREATE,
+    dealId,
+    userId: authUser?.id,
+    requestId: req.headers['x-request-id']
   });
 
-  if (lpActors.length === 0) {
-    return sendError(res, 400, "No active LPs found for this deal. Add LPs before creating a capital call.");
-  }
-
-  // Log share class breakdown
-  const classCounts = {};
-  lpActors.forEach(lp => {
-    const code = lp.shareClass?.code || 'NONE';
-    classCounts[code] = (classCounts[code] || 0) + 1;
-  });
-  console.log(`[Capital Calls] Creating allocations for deal ${dealId}, LP breakdown by class:`, JSON.stringify(classCounts));
-
-  // Calculate total commitment to determine pro-rata allocations
-  const totalCommitment = lpActors.reduce((sum, lp) => sum + (lp.commitment || 0), 0);
-
-  // Create capital call
-  const capitalCall = await prisma.capitalCall.create({
-    data: {
-      id: crypto.randomUUID(),
-      dealId,
+  try {
+    logger.info('Starting capital call creation', {
       title: body.title,
-      description: body.description || null,
       totalAmount: body.totalAmount,
-      dueDate: new Date(body.dueDate),
-      wireInstructions: body.wireInstructions || null,
-      purpose: body.purpose || 'INITIAL_FUNDING',
-      status: 'DRAFT',
-      createdBy: userId,
-      createdByName: userName || 'Unknown'
+      dueDate: body.dueDate
+    });
+
+    // Verify deal exists (deals are stored in store.json, not Prisma)
+    const store = await readStore();
+    const deal = store.dealIndex.find((item) => item.id === dealId);
+    if (!deal) {
+      logger.warn('Deal not found', { dealId });
+      await logger.flush();
+      return sendError(res, 404, "Deal not found");
     }
-  });
 
-  // Create allocations for each LP based on pro-rata share
-  const allocations = await Promise.all(
-    lpActors.map(async (lp) => {
-      const proRataShare = totalCommitment > 0 ? (lp.commitment || 0) / totalCommitment : 1 / lpActors.length;
-      const amount = Math.round(body.totalAmount * proRataShare * 100) / 100;
+    // Get all active LPs for this deal (with share class info for logging)
+    const lpActors = await prisma.lPActor.findMany({
+      where: { dealId, status: 'ACTIVE' },
+      include: { shareClass: { select: { id: true, code: true, name: true } } }
+    });
 
-      return prisma.capitalCallAllocation.create({
+    if (lpActors.length === 0) {
+      logger.warn('No active LPs found', { dealId });
+      await logger.flush();
+      return sendError(res, 400, "No active LPs found for this deal. Add LPs before creating a capital call.");
+    }
+
+    logger.beforeState('lpActors', lpActors.map(lp => ({
+      id: lp.id,
+      entityName: lp.entityName,
+      commitment: lp.commitment,
+      shareClass: lp.shareClass?.code
+    })));
+
+    // Calculate total commitment to determine pro-rata allocations
+    const totalCommitment = lpActors.reduce((sum, lp) => sum + (lp.commitment || 0), 0);
+
+    // Use cents-based allocation for exact sums
+    const totalCents = dollarsToCents(body.totalAmount);
+    const recipients = lpActors.map(lp => ({
+      id: lp.id,
+      weight: totalCommitment > 0 ? lp.commitment : 1  // Equal split if no commitments
+    }));
+    const allocations = allocateCents(totalCents, recipients);
+
+    // Validate allocation sum matches total
+    const sumValidation = validateAllocationSum(allocations, totalCents);
+    const sumValid = logger.invariantCheck(
+      INVARIANTS.ALLOCATION_SUM_EQUALS_TOTAL,
+      sumValidation.valid,
+      { sum: sumValidation.sum, expected: totalCents, diff: sumValidation.diff }
+    );
+
+    if (!sumValid) {
+      logger.critical('Allocation sum mismatch - aborting', sumValidation);
+      await logger.flush();
+      return sendError(res, 500, "Internal error: allocation calculation failed");
+    }
+
+    logger.computedValue('allocations', allocations, {
+      totalCents,
+      totalCommitment,
+      lpCount: lpActors.length
+    });
+
+    // ATOMIC TRANSACTION - all operations succeed or all fail
+    const result = await prisma.$transaction(async (tx) => {
+      logger.info('Starting transaction');
+
+      // 1. Create capital call
+      const capitalCall = await tx.capitalCall.create({
         data: {
           id: crypto.randomUUID(),
-          capitalCallId: capitalCall.id,
-          lpActorId: lp.id,
-          amount,
-          status: 'PENDING',
-          fundedAmount: 0
+          dealId,
+          title: body.title,
+          description: body.description || null,
+          totalAmount: body.totalAmount,
+          dueDate: new Date(body.dueDate),
+          wireInstructions: body.wireInstructions || null,
+          purpose: body.purpose || 'INITIAL_FUNDING',
+          status: 'DRAFT',
+          idempotencyKey: idempotencyKey || null, // Sprint 2: Store idempotency key
+          createdBy: userId,
+          createdByName: userName || 'Unknown'
         }
       });
-    })
-  );
 
-  // Create snapshot of cap table for reproducibility
-  const snapshot = await createCapTableSnapshot(
-    dealId,
-    'CAPITAL_CALL_CALC',
-    `Capital Call: ${body.title}`,
-    { id: userId, name: userName }
-  );
+      logger.info('Created capital call', { capitalCallId: capitalCall.id });
 
-  // Update capital call with snapshotId
-  await prisma.capitalCall.update({
-    where: { id: capitalCall.id },
-    data: { snapshotId: snapshot.id }
-  });
+      // 2. Create allocations for each LP
+      const createdAllocations = [];
+      for (const alloc of allocations) {
+        const lpActor = lpActors.find(lp => lp.id === alloc.id);
 
-  // Record audit event
-  await createDealEvent(dealId, 'CAPITAL_CALL_CREATED', {
-    capitalCallId: capitalCall.id,
-    title: capitalCall.title,
-    totalAmount: capitalCall.totalAmount,
-    dueDate: capitalCall.dueDate.toISOString(),
-    purpose: capitalCall.purpose,
-    snapshotId: snapshot.id,
-    allocationCount: allocations.length,
-    allocations: allocations.map(a => ({
-      lpActorId: a.lpActorId,
-      amount: a.amount
-    }))
-  }, { id: userId, name: userName, role: 'GP' });
+        const allocation = await tx.capitalCallAllocation.create({
+          data: {
+            id: crypto.randomUUID(),
+            capitalCallId: capitalCall.id,
+            lpActorId: alloc.id,
+            amount: alloc.dollars,  // Stored as dollars
+            status: 'PENDING',
+            fundedAmount: 0
+          }
+        });
 
-  console.log(`[Capital Calls] Created capital call ${capitalCall.id} for deal ${dealId} with ${allocations.length} allocations (snapshot: ${snapshot.id})`);
+        createdAllocations.push({
+          ...allocation,
+          lpEntityName: lpActor?.entityName,
+          lpEmail: lpActor?.email
+        });
 
-  sendJson(res, 201, {
-    capitalCall: {
-      id: capitalCall.id,
-      dealId: capitalCall.dealId,
-      title: capitalCall.title,
-      totalAmount: capitalCall.totalAmount,
-      dueDate: capitalCall.dueDate.toISOString(),
-      status: capitalCall.status,
-      allocationCount: allocations.length,
+        logger.debug('Created allocation', {
+          allocationId: allocation.id,
+          lpActorId: alloc.id,
+          amount: alloc.dollars
+        });
+      }
+
+      // 3. Verify final state inside transaction
+      const verifyAllocations = await tx.capitalCallAllocation.findMany({
+        where: { capitalCallId: capitalCall.id }
+      });
+
+      const verifySum = verifyAllocations.reduce((sum, a) => sum + a.amount, 0);
+      const verifyDiff = Math.abs(verifySum - body.totalAmount);
+
+      logger.invariantCheck(
+        'FINAL_ALLOCATION_SUM_MATCHES',
+        verifyDiff < 0.01,
+        { verifySum, expectedTotal: body.totalAmount, diff: verifyDiff }
+      );
+
+      logger.info('Transaction complete', {
+        capitalCallId: capitalCall.id,
+        allocationCount: createdAllocations.length
+      });
+
+      return { capitalCall, allocations: createdAllocations };
+    });
+
+    // Operations AFTER transaction succeeds (non-critical)
+
+    // Create snapshot of cap table for reproducibility
+    const snapshot = await createCapTableSnapshot(
+      dealId,
+      'CAPITAL_CALL_CALC',
+      `Capital Call: ${body.title}`,
+      { id: userId, name: userName }
+    );
+
+    // Update capital call with snapshotId
+    await prisma.capitalCall.update({
+      where: { id: result.capitalCall.id },
+      data: { snapshotId: snapshot.id }
+    });
+
+    // Record audit event
+    await createDealEvent(dealId, 'CAPITAL_CALL_CREATED', {
+      capitalCallId: result.capitalCall.id,
+      title: result.capitalCall.title,
+      totalAmount: result.capitalCall.totalAmount,
+      dueDate: result.capitalCall.dueDate.toISOString(),
+      purpose: result.capitalCall.purpose,
+      snapshotId: snapshot.id,
+      allocationCount: result.allocations.length,
+      allocations: result.allocations.map(a => ({
+        lpActorId: a.lpActorId,
+        amount: a.amount
+      }))
+    }, { id: userId, name: userName, role: 'GP' });
+
+    logger.afterState('result', {
+      capitalCallId: result.capitalCall.id,
+      allocationCount: result.allocations.length,
+      totalAmount: result.capitalCall.totalAmount,
       snapshotId: snapshot.id
+    });
+
+    await logger.flush();
+
+    console.log(`[Capital Calls] Created capital call ${result.capitalCall.id} for deal ${dealId} with ${result.allocations.length} allocations (snapshot: ${snapshot.id})`);
+
+    sendJson(res, 201, {
+      capitalCall: {
+        id: result.capitalCall.id,
+        dealId: result.capitalCall.dealId,
+        title: result.capitalCall.title,
+        totalAmount: result.capitalCall.totalAmount,
+        dueDate: result.capitalCall.dueDate.toISOString(),
+        status: result.capitalCall.status,
+        allocationCount: result.allocations.length,
+        snapshotId: snapshot.id
+      }
+    });
+
+  } catch (error) {
+    logger.error('Capital call creation failed', {
+      error: error.message,
+      stack: error.stack
+    });
+    await logger.flush();
+
+    // Check for unique constraint violation (duplicate allocation)
+    if (error.code === 'P2002') {
+      return sendError(res, 409, 'Duplicate allocation detected');
     }
-  });
+
+    throw error;
+  }
 }
 
 /**
@@ -382,6 +608,57 @@ export async function handleIssueCapitalCall(req, res, dealId, callId, userId, u
 
   console.log(`[Capital Calls] Issued capital call ${callId} by ${authUser.name}`);
 
+  // Audit log for compliance
+  await logPermissionAction({
+    actorId: authUser.id,
+    action: AUDIT_ACTIONS.CAPITAL_CALL_ISSUED,
+    resourceType: 'CapitalCall',
+    resourceId: callId,
+    beforeValue: { status: 'DRAFT' },
+    afterValue: {
+      status: 'ISSUED',
+      totalAmount: capitalCall.totalAmount,
+      issuedAt: updated.issuedAt.toISOString()
+    },
+    metadata: { dealId, callTitle: capitalCall.title },
+    ipAddress: req.headers['x-forwarded-for'] || req.socket?.remoteAddress
+  });
+
+  // Fetch allocations with LP details for webhook
+  const allocations = await prisma.capitalCallAllocation.findMany({
+    where: { capitalCallId: callId },
+    include: {
+      lpActor: {
+        select: {
+          id: true,
+          entityName: true,
+          email: true
+        }
+      }
+    }
+  });
+
+  // Emit webhook for n8n to send LP notifications
+  // NOTE: Fixed bug - was using a.callAmount (undefined) instead of a.amount (schema field)
+  await emitLpWebhook("CAPITAL_CALL_ISSUED", {
+    dealId,
+    callId,
+    callTitle: capitalCall.title,
+    totalAmount: capitalCall.totalAmount,
+    dueDate: capitalCall.dueDate?.toISOString(),
+    purpose: capitalCall.purpose,
+    issuedBy: authUser.name || 'Unknown',
+    issuedAt: updated.issuedAt.toISOString(),
+    allocations: allocations.map(a => ({
+      allocationId: a.id,
+      lpActorId: a.lpActor.id,
+      lpEntityName: a.lpActor.entityName,
+      lpEmail: a.lpActor.email,
+      callAmount: a.amount,  // FIXED: was a.callAmount (undefined)
+      status: a.status
+    }))
+  });
+
   sendJson(res, 200, {
     capitalCall: {
       id: updated.id,
@@ -399,7 +676,23 @@ export async function handleUpdateCapitalCall(req, res, dealId, callId, readJson
   const authUser = await requireGP(req, res);
   if (!authUser) return;
 
-  const body = await readJsonBody(req);
+  const validationLog = createValidationLogger('handleUpdateCapitalCall');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
+
+  // Validate with Zod schema
+  const parseResult = UpdateCapitalCallSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
+  }
+
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
+
   const prisma = getPrisma();
 
   const capitalCall = await prisma.capitalCall.findFirst({
@@ -645,7 +938,23 @@ export async function handleMarkWireInitiated(req, res, authUser, dealId, callId
     return sendError(res, 403, "Only LP users can access this endpoint");
   }
 
-  const body = await readJsonBody(req);
+  const validationLog = createValidationLogger('handleMarkWireInitiated');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
+
+  // Validate with Zod schema
+  const parseResult = MarkWireInitiatedSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
+  }
+
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
+
   const prisma = getPrisma();
 
   // Find LP actor
@@ -723,11 +1032,22 @@ export async function handleUploadWireProof(req, res, authUser, dealId, callId, 
     return sendError(res, 403, "Only LP users can access this endpoint");
   }
 
-  const body = await readJsonBody(req);
+  const validationLog = createValidationLogger('handleUploadWireProof');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
 
-  if (!body?.documentId) {
-    return sendError(res, 400, "documentId is required");
+  // Validate with Zod schema
+  const parseResult = UploadWireProofSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
   }
+
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
 
   const prisma = getPrisma();
 
@@ -788,86 +1108,207 @@ export async function handleMarkFunded(req, res, dealId, callId, allocationId, r
   const authUser = await requireGP(req, res);
   if (!authUser) return;
 
-  const body = await readJsonBody(req);
+  const validationLog = createValidationLogger('handleMarkFunded');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
+
+  // Validate with Zod schema
+  const parseResult = MarkFundedSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
+  }
+
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
+
   const prisma = getPrisma();
 
-  const allocation = await prisma.capitalCallAllocation.findFirst({
-    where: { id: allocationId, capitalCallId: callId }
+  // Create integrity logger
+  const logger = createIntegrityLogger({
+    operation: INTEGRITY_OPERATIONS.CAPITAL_CALL_FUND,
+    dealId,
+    userId: authUser?.id,
+    requestId: req.headers['x-request-id']
   });
 
-  if (!allocation) {
-    return sendError(res, 404, "Allocation not found");
-  }
-
-  // Update allocation
-  const updated = await prisma.capitalCallAllocation.update({
-    where: { id: allocationId },
-    data: {
-      status: 'FUNDED',
-      fundedAmount: body?.fundedAmount ?? allocation.amount,
-      fundedAt: new Date()
-    }
-  });
-
-  // Check if all allocations are funded
-  const allAllocations = await prisma.capitalCallAllocation.findMany({
-    where: { capitalCallId: callId }
-  });
-
-  const allFunded = allAllocations.every(a => a.status === 'FUNDED');
-  const someFunded = allAllocations.some(a => a.status === 'FUNDED');
-
-  // Update capital call status
-  let newCallStatus = null;
-  if (allFunded) {
-    await prisma.capitalCall.update({
-      where: { id: callId },
-      data: { status: 'FUNDED' }
+  try {
+    logger.info('Funding allocation', {
+      allocationId,
+      callId,
+      fundedAmount: body?.fundedAmount,
+      expectedVersion: body?.expectedVersion
     });
-    newCallStatus = 'FUNDED';
-  } else if (someFunded) {
-    await prisma.capitalCall.update({
-      where: { id: callId },
-      data: { status: 'PARTIALLY_FUNDED' }
+
+    // Use transaction for optimistic concurrency
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Get current allocation with version check
+      const allocation = await tx.capitalCallAllocation.findFirst({
+        where: { id: allocationId, capitalCallId: callId }
+      });
+
+      if (!allocation) {
+        throw { code: 'NOT_FOUND', message: 'Allocation not found' };
+      }
+
+      // 2. OPTIMISTIC CONCURRENCY - check version if provided
+      if (body?.expectedVersion !== undefined && allocation.version !== body.expectedVersion) {
+        logger.warn('Version mismatch - concurrent modification detected', {
+          expectedVersion: body.expectedVersion,
+          actualVersion: allocation.version
+        });
+        throw {
+          code: 'CONCURRENCY_ERROR',
+          message: `Allocation was modified by another user. Expected version ${body.expectedVersion}, found ${allocation.version}. Please refresh and try again.`
+        };
+      }
+
+      logger.beforeState('allocation', {
+        id: allocation.id,
+        status: allocation.status,
+        fundedAmount: allocation.fundedAmount,
+        version: allocation.version
+      });
+
+      // 3. Validate state transition
+      if (allocation.status === 'FUNDED') {
+        throw { code: 'ALREADY_FUNDED', message: 'Allocation is already funded' };
+      }
+
+      // 4. Update allocation with version increment
+      const updated = await tx.capitalCallAllocation.update({
+        where: { id: allocationId },
+        data: {
+          status: 'FUNDED',
+          fundedAmount: body?.fundedAmount ?? allocation.amount,
+          fundedAt: new Date(),
+          wireReference: body?.confirmationRef || null,
+          version: allocation.version + 1  // Increment version for optimistic concurrency
+        }
+      });
+
+      logger.afterState('allocation', {
+        id: updated.id,
+        status: updated.status,
+        fundedAmount: updated.fundedAmount,
+        version: updated.version
+      });
+
+      // 5. Check if all allocations are funded
+      const allAllocations = await tx.capitalCallAllocation.findMany({
+        where: { capitalCallId: callId }
+      });
+
+      const allFunded = allAllocations.every(a => a.status === 'FUNDED');
+      const someFunded = allAllocations.some(a => a.status === 'FUNDED');
+
+      // 6. Update capital call status
+      let newCallStatus = null;
+      if (allFunded) {
+        await tx.capitalCall.update({
+          where: { id: callId },
+          data: { status: 'FUNDED' }
+        });
+        newCallStatus = 'FUNDED';
+        logger.info('All allocations funded - capital call marked FUNDED', { callId });
+      } else if (someFunded) {
+        await tx.capitalCall.update({
+          where: { id: callId },
+          data: { status: 'PARTIALLY_FUNDED' }
+        });
+        newCallStatus = 'PARTIALLY_FUNDED';
+      }
+
+      return { allocation, updated, newCallStatus };
     });
-    newCallStatus = 'PARTIALLY_FUNDED';
-  }
 
-  // Get LP actor info for audit
-  const lpActor = await prisma.lPActor.findUnique({
-    where: { id: allocation.lpActorId },
-    select: { entityName: true }
-  });
+    // Get LP actor info for audit (outside transaction)
+    const lpActor = await prisma.lPActor.findUnique({
+      where: { id: result.allocation.lpActorId },
+      select: { entityName: true }
+    });
 
-  // Get capital call for context
-  const capitalCall = await prisma.capitalCall.findUnique({
-    where: { id: callId },
-    select: { dealId: true, title: true }
-  });
+    // Get capital call for context
+    const capitalCall = await prisma.capitalCall.findUnique({
+      where: { id: callId },
+      select: { dealId: true, title: true }
+    });
 
-  // Record audit event
-  await createDealEvent(dealId, 'CAPITAL_CALL_FUNDED', {
-    capitalCallId: callId,
-    capitalCallTitle: capitalCall?.title,
-    allocationId: allocationId,
-    lpActorId: allocation.lpActorId,
-    lpEntityName: lpActor?.entityName,
-    requestedAmount: allocation.amount,
-    fundedAmount: updated.fundedAmount,
-    confirmationRef: body?.confirmationRef || null,
-    newCallStatus
-  }, { id: authUser.id, name: authUser.name, role: authUser.role });
+    // Record audit event
+    await createDealEvent(dealId, 'CAPITAL_CALL_FUNDED', {
+      capitalCallId: callId,
+      capitalCallTitle: capitalCall?.title,
+      allocationId: allocationId,
+      lpActorId: result.allocation.lpActorId,
+      lpEntityName: lpActor?.entityName,
+      requestedAmount: result.allocation.amount,
+      fundedAmount: result.updated.fundedAmount,
+      confirmationRef: body?.confirmationRef || null,
+      newCallStatus: result.newCallStatus,
+      version: result.updated.version
+    }, { id: authUser.id, name: authUser.name, role: authUser.role });
 
-  console.log(`[Capital Calls] Marked allocation ${allocationId} as funded`);
+    // Audit log with AUDIT_ACTIONS
+    await logPermissionAction({
+      actorId: authUser.id,
+      action: AUDIT_ACTIONS.CAPITAL_CALL_ALLOCATION_FUNDED,
+      resourceType: 'CapitalCallAllocation',
+      resourceId: allocationId,
+      beforeValue: {
+        status: result.allocation.status,
+        fundedAmount: result.allocation.fundedAmount,
+        version: result.allocation.version
+      },
+      afterValue: {
+        status: result.updated.status,
+        fundedAmount: result.updated.fundedAmount,
+        version: result.updated.version
+      },
+      metadata: { dealId, capitalCallId: callId, lpActorId: result.allocation.lpActorId },
+      ipAddress: req.headers['x-forwarded-for'] || req.socket?.remoteAddress
+    });
 
-  sendJson(res, 200, {
-    allocation: {
-      id: updated.id,
-      status: updated.status,
-      fundedAmount: updated.fundedAmount,
-      fundedAt: updated.fundedAt.toISOString()
+    await logger.flush();
+
+    console.log(`[Capital Calls] Marked allocation ${allocationId} as funded (version: ${result.updated.version})`);
+
+    sendJson(res, 200, {
+      allocation: {
+        id: result.updated.id,
+        status: result.updated.status,
+        fundedAmount: result.updated.fundedAmount,
+        fundedAt: result.updated.fundedAt.toISOString(),
+        version: result.updated.version
+      },
+      capitalCallStatus: result.newCallStatus
+    });
+
+  } catch (error) {
+    // Handle specific error types
+    if (error.code === 'NOT_FOUND') {
+      logger.warn('Allocation not found', { allocationId });
+      await logger.flush();
+      return sendError(res, 404, error.message);
     }
-  });
+
+    if (error.code === 'CONCURRENCY_ERROR') {
+      await logger.flush();
+      return sendError(res, 409, error.message, 'CONCURRENCY_ERROR');
+    }
+
+    if (error.code === 'ALREADY_FUNDED') {
+      logger.warn('Already funded', { allocationId });
+      await logger.flush();
+      return sendError(res, 400, error.message);
+    }
+
+    logger.error('Fund allocation failed', { error: error.message });
+    await logger.flush();
+    throw error;
+  }
 }
 
 /**

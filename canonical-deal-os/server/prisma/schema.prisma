@@ -326,6 +326,10 @@ model LPInvitation {
 
   shareClass       ShareClass? @relation(fields: [shareClassId], references: [id])
 
+  // n8n workflow relations
+  emailDrafts      EmailDraft[]
+  reminderState    InvitationReminderState?
+
   @@index([dealId])
   @@index([lpEmail])
   @@index([status])
@@ -1556,6 +1560,7 @@ model CapitalCall {
   documentId      String?                               // Link to notice PDF
   snapshotId      String?                               // Reference to frozen cap table state at creation
   periodId        String?                               // Reference to accounting period (for GL close validation)
+  idempotencyKey  String?   @unique                     // Sprint 2: Idempotency key for duplicate request prevention
   createdBy       String
   createdByName   String
   createdAt       DateTime  @default(now())
@@ -1583,6 +1588,7 @@ model CapitalCallAllocation {
   remindersSent   Int       @default(0)
   lastReminderAt  DateTime?
   notes           String?
+  version         Int       @default(1)                 // Optimistic concurrency control
 
   capitalCall     CapitalCall @relation(fields: [capitalCallId], references: [id], onDelete: Cascade)
 
@@ -1610,6 +1616,7 @@ model Distribution {
   documentId      String?                               // Link to distribution statement
   snapshotId      String?                               // Reference to frozen cap table state at creation
   periodId        String?                               // Reference to accounting period (for GL close validation)
+  idempotencyKey  String?   @unique                     // Sprint 2: Idempotency key for duplicate request prevention
   createdBy       String
   createdByName   String
   createdAt       DateTime  @default(now())
@@ -1635,6 +1642,7 @@ model DistributionAllocation {
   paidAt          DateTime?
   confirmationRef String?
   notes           String?
+  version         Int       @default(1)                 // Optimistic concurrency control
 
   distribution    Distribution @relation(fields: [distributionId], references: [id], onDelete: Cascade)
 
@@ -2452,7 +2460,9 @@ model DealDraft {
   documents         DealDraftDocument[]
   omVersions        OMVersion[]
   distributions     DealDistribution[]
+  listingConfig     ListingConfiguration?
   listingAgreements ListingAgreement[]
+  brokerInvitations BrokerInvitation[]
 
   @@index([organizationId])
   @@index([status])
@@ -2949,6 +2959,47 @@ model DealIntakeEventLog {
 }
 
 // ============================================================================
+// LISTING CONFIGURATION - Marketing settings for a listing
+// ============================================================================
+// Broker-configured marketing options for the listing.
+
+model ListingConfiguration {
+  id                    String    @id @default(uuid())
+  dealDraftId           String    @unique
+  dealDraft             DealDraft @relation(fields: [dealDraftId], references: [id], onDelete: Cascade)
+
+  // Visibility
+  visibility            String    @default("PLATFORM")      // PLATFORM, INVITE_ONLY
+
+  // Target buyers (stored as JSON strings for SQLite compatibility)
+  targetBuyerTypes      String?                             // JSON array: INSTITUTIONAL, PRIVATE, REIT, FAMILY_OFFICE, 1031_EXCHANGE, OWNER_OCCUPANT
+  targetInvestmentMin   Float?                              // Minimum investment size
+  targetInvestmentMax   Float?                              // Maximum investment size
+  targetGeographies     String?                             // JSON array: LOCAL, NATIONAL, INTERNATIONAL
+
+  // Marketing materials
+  enableOM              Boolean   @default(true)            // Generate Offering Memorandum
+  enableFlyers          Boolean   @default(false)           // Create marketing flyers
+  enablePropertyWebsite Boolean   @default(false)           // Create property landing page
+
+  // Timeline
+  offerDeadline         DateTime?                           // Deadline for offers
+  listingDuration       Int?                                // Duration in days
+  openHouseDates        String?                             // JSON array of ISO date strings
+
+  // Configured by
+  configuredBy          String?                             // User ID who configured
+  configuredByName      String?
+
+  // Timestamps
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([dealDraftId])
+  @@index([visibility])
+}
+
+// ============================================================================
 // LISTING AGREEMENT - Formalizes seller-broker relationship
 // ============================================================================
 // Defines the legal relationship between seller and broker for a listing.
@@ -2983,7 +3034,9 @@ model ListingAgreement {
 
   // Confirmation workflow - both parties must confirm
   sellerConfirmedAt DateTime?                           // When seller accepted terms
+  sellerConfirmedIp String?                             // IP address for ESIGN compliance
   brokerConfirmedAt DateTime?                           // When broker accepted terms
+  brokerConfirmedIp String?                             // IP address for ESIGN compliance
   status            String    @default("DRAFT")         // DRAFT, PENDING_SELLER, PENDING_BROKER, ACTIVE, EXPIRED, TERMINATED
 
   // Termination fields
@@ -3052,6 +3105,7 @@ model CommissionAgreement {
 model BrokerInvitation {
   id                String    @id @default(uuid())
   dealDraftId       String?                             // If for a specific listing
+  dealDraft         DealDraft? @relation(fields: [dealDraftId], references: [id])
   organizationId    String                              // Seller's organization
 
   // Inviter (seller)
@@ -3073,6 +3127,18 @@ model BrokerInvitation {
   respondedAt       DateTime?
   respondedByUserId String?                             // AuthUser ID if broker already had account
 
+  // Commission terms proposed by seller
+  commissionType        String?                         // PERCENTAGE, FLAT_FEE, TIERED, CUSTOM
+  commissionRate        Float?                          // e.g., 0.03 for 3%
+  commissionAmount      Float?                          // for flat fee
+  commissionNotes       String?                         // additional terms/conditions
+
+  // Negotiation status
+  negotiationStatus     String    @default("NONE")      // NONE, PENDING, AGREED, NEGOTIATE_LATER
+
+  // Relation to negotiations
+  negotiations          CommissionNegotiation[]
+
   // Timestamps
   sentAt            DateTime  @default(now())
 
@@ -3080,4 +3146,1795 @@ model BrokerInvitation {
   @@index([status])
   @@index([token])
   @@index([dealDraftId])
+  @@index([negotiationStatus])
+}
+
+// ============================================================================
+// COMMISSION NEGOTIATION - Counter-offers between seller and broker
+// ============================================================================
+// Tracks the back-and-forth negotiation of commission terms
+
+model CommissionNegotiation {
+  id                    String    @id @default(uuid())
+  invitationId          String
+  invitation            BrokerInvitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+
+  // Who proposed this offer
+  proposedBy            String                              // User ID
+  proposedByRole        String                              // SELLER or BROKER
+
+  // Proposed terms
+  commissionType        String                              // PERCENTAGE, FLAT_FEE, TIERED, CUSTOM
+  commissionRate        Float?                              // e.g., 0.03 for 3%
+  commissionAmount      Float?                              // for flat fee
+  notes                 String?                             // additional terms
+
+  // Response
+  status                String    @default("PENDING")       // PENDING, ACCEPTED, COUNTERED, REJECTED
+  respondedAt           DateTime?
+  respondedBy           String?                             // User ID who responded
+
+  // Negotiation round (1, 2, 3, etc.)
+  round                 Int       @default(1)
+
+  createdAt             DateTime  @default(now())
+
+  @@index([invitationId])
+  @@index([status])
+  @@index([proposedBy])
+}
+
+// ============================================================================
+// CONTACT - Unified contact/vendor database
+// ============================================================================
+// Stores all external parties: brokers, lenders, attorneys, appraisers, etc.
+// Org-isolated, reusable across deals.
+
+model Contact {
+  id                  String        @id @default(uuid())
+  organizationId      String                              // Org isolation
+
+  // Classification
+  contactType         String                              // BROKER, LENDER, ATTORNEY, TITLE_COMPANY, APPRAISER,
+                                                          // INSPECTOR, ENVIRONMENTAL, PROPERTY_MANAGER,
+                                                          // ESCROW_AGENT, INSURANCE_AGENT, TAX_ADVISOR,
+                                                          // CONTRACTOR, INVESTOR, OTHER
+  isPerson            Boolean       @default(true)        // true = person, false = company
+
+  // Identity
+  name                String                              // Person name or company name
+  companyName         String?                             // Company they work for (if person)
+  title               String?                             // Job title
+
+  // Contact Info
+  email               String?
+  phone               String?
+  phoneAlt            String?
+  address             String?                             // JSON: { street, city, state, zip }
+  website             String?
+
+  // Account Linking
+  authUserId          String?                             // If they have platform account
+  canSelfEdit         Boolean       @default(false)       // Vendor can edit own profile
+
+  // Status
+  status              String        @default("ACTIVE")    // ACTIVE, INACTIVE, ARCHIVED
+
+  // Favorites & Preferences
+  isOrgPreferred      Boolean       @default(false)       // Org-wide preferred vendor (admin-set)
+
+  // Metadata
+  notes               String?
+  tags                String?                             // JSON array for categorization
+  preferredMethod     String?                             // EMAIL, PHONE, TEXT
+
+  // Type-Specific Fields (JSON)
+  // BROKER: { licenseNo, licenseState, licenseExpiry, mlsId, brokerageAffiliation }
+  // LENDER: { nmlsId, loanTypes[], typicalTerms, minLoanSize, maxLoanSize }
+  // ATTORNEY: { barNumber, barStates[], specialties[] }
+  // APPRAISER: { licenseNo, licenseState, certifications[] }
+  typeFields          String?
+
+  // Metrics (denormalized for quick display)
+  dealCount           Int           @default(0)
+  avgRating           Float?
+  lastUsedAt          DateTime?
+
+  // Audit
+  createdBy           String
+  createdByName       String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  // Relations
+  credentials         ContactCredential[]
+  dealAssignments     DealContact[]
+  communications      ContactCommunication[]
+  ratings             ContactRating[]
+
+  @@index([organizationId])
+  @@index([contactType])
+  @@index([status])
+  @@index([email])
+  @@index([authUserId])
+  @@index([name])
+}
+
+// ============================================================================
+// CONTACT CREDENTIAL - Licenses, certifications, insurance
+// ============================================================================
+// Track credentials, licenses, and insurance for vendors.
+// Supports expiration tracking and verification.
+
+model ContactCredential {
+  id                  String    @id @default(uuid())
+  contactId           String
+
+  // Credential Details
+  credentialType      String                              // LICENSE, CERTIFICATION, INSURANCE, BOND
+  credentialName      String                              // "RE Broker License", "E&O Insurance"
+  issuingAuthority    String?                             // "California DRE"
+  credentialNumber    String?
+
+  // Scope
+  state               String?
+  jurisdiction        String?
+
+  // Validity
+  issuedDate          DateTime?
+  expirationDate      DateTime?
+  status              String    @default("ACTIVE")        // ACTIVE, EXPIRED, EXPIRING_SOON
+
+  // Verification
+  documentId          String?                             // Uploaded proof artifact ID
+  verifiedAt          DateTime?
+  verifiedBy          String?
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  contact             Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
+  @@index([expirationDate])
+  @@index([status])
+}
+
+// ============================================================================
+// DEAL CONTACT - Contact assignments to deals
+// ============================================================================
+// Links contacts to specific deals with role and cost tracking.
+
+model DealContact {
+  id                  String    @id @default(uuid())
+  dealId              String                              // Kernel deal or DealDraft ID
+  dealType            String    @default("DRAFT")         // KERNEL, DRAFT
+  contactId           String
+  organizationId      String
+
+  // Role
+  role                String                              // LISTING_BROKER, CO_BROKER, LENDER, TITLE, etc.
+  isPrimary           Boolean   @default(false)
+
+  // Cost Tracking
+  feeType             String?                             // FLAT, PERCENTAGE, HOURLY
+  estimatedFee        Float?
+  actualFee           Float?
+  feeNotes            String?
+
+  // Status
+  status              String    @default("ACTIVE")        // ACTIVE, COMPLETED, CANCELLED
+  assignedAt          DateTime  @default(now())
+  assignedBy          String
+  assignedByName      String?
+  completedAt         DateTime?
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  contact             Contact   @relation(fields: [contactId], references: [id])
+
+  @@unique([dealId, dealType, contactId, role])
+  @@index([dealId])
+  @@index([contactId])
+  @@index([organizationId])
+  @@index([role])
+}
+
+// ============================================================================
+// CONTACT COMMUNICATION - Activity stream
+// ============================================================================
+// Logs all communications and activities with contacts.
+
+model ContactCommunication {
+  id                  String    @id @default(uuid())
+  contactId           String
+  dealId              String?                             // Optional deal context
+
+  // Activity Details
+  activityType        String                              // EMAIL_SENT, EMAIL_RECEIVED, CALL, MEETING,
+                                                          // NOTE, DOCUMENT_SHARED, PORTAL_ACCESS, DEAL_ASSIGNED
+  direction           String?                             // INBOUND, OUTBOUND (for comms)
+  subject             String?
+  summary             String
+
+  // Auto-tracking metadata
+  isAutoLogged        Boolean   @default(false)
+  sourceSystem        String?                             // EMAIL, PORTAL, SYSTEM
+
+  occurredAt          DateTime  @default(now())
+  recordedBy          String
+  recordedByName      String?
+
+  attachmentIds       String?                             // JSON array of artifact IDs
+
+  createdAt           DateTime  @default(now())
+
+  contact             Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
+  @@index([dealId])
+  @@index([occurredAt])
+  @@index([activityType])
+}
+
+// ============================================================================
+// CONTACT RATING - Vendor performance ratings
+// ============================================================================
+// Track ratings and feedback for vendors. Vendors can see their own ratings.
+
+model ContactRating {
+  id                  String    @id @default(uuid())
+  contactId           String
+  dealId              String?                             // Deal this rating relates to
+
+  // Ratings (1-5)
+  overallRating       Int
+  qualityRating       Int?
+  timelinessRating    Int?
+  communicationRating Int?
+  valueRating         Int?
+
+  // Feedback
+  comments            String?
+  wouldRecommend      Boolean   @default(true)
+
+  // Visibility
+  isPublicToVendor    Boolean   @default(true)            // Vendor can see this rating
+
+  ratedBy             String
+  ratedByName         String?
+  ratedAt             DateTime  @default(now())
+
+  contact             Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId])
+  @@index([dealId])
+  @@index([overallRating])
+}
+
+// ============================================================================
+// USER CONTACT FAVORITE - Personal favorites
+// ============================================================================
+// Users can mark contacts as personal favorites (separate from org preferred).
+
+model UserContactFavorite {
+  id                  String    @id @default(uuid())
+  userId              String                              // AuthUser who favorited
+  contactId           String
+
+  createdAt           DateTime  @default(now())
+
+  @@unique([userId, contactId])
+  @@index([userId])
+  @@index([contactId])
+}
+
+// ============================================================================
+// N8N WORKFLOW INTEGRATION - Audit logging for n8n workflow activity
+// ============================================================================
+// Tracks all actions taken by n8n workflows for compliance and debugging.
+
+model N8nWorkflowLog {
+  id              String    @id @default(uuid())
+  workflowId      String                              // n8n workflow execution ID
+  workflowName    String                              // e.g., "LP_INVITATION_FUNNEL"
+  triggerEvent    String                              // e.g., "LP_INVITATION_SENT"
+  entityType      String                              // e.g., "LP_INVITATION", "DEAL"
+  entityId        String                              // invitationId or dealId
+  action          String                              // e.g., "REMINDER_SENT", "EMAIL_GENERATED"
+  status          String    @default("SUCCESS")       // SUCCESS, FAILED, PENDING
+  payload         String?                             // JSON of request/response data
+  errorMessage    String?
+  createdAt       DateTime  @default(now())
+
+  @@index([workflowId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// EMAIL DRAFT - AI-generated emails pending GP approval
+// ============================================================================
+// Stores email drafts generated by AI for GP review before sending.
+
+model EmailDraft {
+  id                String    @id @default(uuid())
+  invitationId      String
+  dealId            String
+  recipientEmail    String
+  recipientName     String?
+  emailType         String                              // INVITATION, REMINDER_DAY3, REMINDER_DAY7, REMINDER_DAY14, ESCALATION
+  subject           String
+  bodyHtml          String
+  bodyText          String
+  aiGenerated       Boolean   @default(true)
+  aiPrompt          String?                             // Prompt used to generate (for transparency)
+  status            String    @default("PENDING")       // PENDING, APPROVED, REJECTED, SENT
+
+  // Approval tracking
+  approvedBy        String?
+  approvedByName    String?
+  approvedAt        DateTime?
+  rejectedBy        String?
+  rejectedByName    String?
+  rejectedAt        DateTime?
+  rejectionReason   String?
+
+  // Send tracking
+  sentAt            DateTime?
+  sendGridMessageId String?
+
+  // n8n tracking
+  n8nExecutionId    String?                             // Which n8n execution created this
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  invitation        LPInvitation @relation(fields: [invitationId], references: [id])
+
+  @@index([invitationId])
+  @@index([dealId])
+  @@index([status])
+  @@index([emailType])
+}
+
+// ============================================================================
+// INVITATION REMINDER STATE - Tracks LP invitation funnel progress
+// ============================================================================
+// Managed by n8n but readable by BFF for UI display.
+
+model InvitationReminderState {
+  id                  String    @id @default(uuid())
+  invitationId        String    @unique
+  currentStep         String    @default("INITIAL")     // INITIAL, REMINDER_3D, REMINDER_7D, REMINDER_14D, ESCALATED, EXPIRED
+  remindersSent       Int       @default(0)
+  lastReminderAt      DateTime?
+  nextReminderAt      DateTime?
+  escalatedAt         DateTime?
+  escalatedToUserId   String?
+  expiredAt           DateTime?
+  n8nExecutionId      String?                           // Current n8n workflow execution
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  invitation          LPInvitation @relation(fields: [invitationId], references: [id])
+
+  @@index([currentStep])
+  @@index([nextReminderAt])
+}
+
+// ============================================================================
+// SMS LOG - Twilio SMS delivery tracking
+// ============================================================================
+// Tracks all SMS messages sent via Twilio for audit and delivery status.
+
+model SmsLog {
+  id              String    @id @default(uuid())
+  twilioSid       String?   @unique                     // Twilio message SID
+  invitationId    String?
+  dealId          String?
+  recipientPhone  String
+  recipientName   String?
+  messageType     String                                // REMINDER, ESCALATION
+  body            String
+  status          String    @default("QUEUED")          // QUEUED, SENT, DELIVERED, FAILED
+  errorCode       String?
+  errorMessage    String?
+  sentAt          DateTime?
+  deliveredAt     DateTime?
+
+  createdAt       DateTime  @default(now())
+
+  @@index([invitationId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ========== SCHEDULER LOG (n8n Migration) ==========
+// Logs scheduler job executions for Node-cron vs n8n comparison
+// during migration period. Allows parallel run validation.
+
+model SchedulerLog {
+  id        String    @id @default(uuid())
+  runId     String                          // Unique ID per execution (for correlation)
+  jobType   String                          // DEADLINE_SCAN, ESCALATION, SNOOZE
+  source    String                          // NODE_CRON or N8N
+  results   String?                         // JSON success details
+  error     String?                         // Error message if failed
+  itemsProcessed Int  @default(0)           // Count of items handled
+  durationMs     Int?                       // Execution duration in milliseconds
+  createdAt DateTime  @default(now())
+
+  @@index([jobType, source, createdAt])
+  @@index([runId])
+}
+
+// =============================================================================
+// DATA INTEGRITY LOGGING (P1 Data Integrity Sprint)
+// =============================================================================
+
+model IntegrityLog {
+  id          String   @id @default(uuid())
+  operation   String   // "CAPITAL_CALL_CREATE", "DISTRIBUTION_CREATE", etc.
+  dealId      String?
+  logs        String   // JSON array of log entries
+  createdAt   DateTime @default(now())
+
+  @@index([operation])
+  @@index([dealId])
+  @@index([createdAt])
+}
+
+model IntegrityViolation {
+  id            String   @id @default(uuid())
+  invariantName String   // "ALLOCATION_SUM_MATCHES_TOTAL", "LP_POSITION_CONSISTENT"
+  operation     String
+  dealId        String?
+  userId        String?
+  details       String   // JSON with violation details
+  resolved      Boolean  @default(false)
+  resolvedAt    DateTime?
+  resolvedBy    String?
+  detectedAt    DateTime @default(now())
+
+  @@index([invariantName])
+  @@index([resolved])
+  @@index([detectedAt])
+}
+
+// =============================================================================
+// OUTBOX PATTERN FOR RELIABLE SIDE EFFECTS (P1 Data Integrity Sprint)
+// =============================================================================
+
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  eventType     String    // "SEND_EMAIL", "TRIGGER_WEBHOOK", "NOTIFY_N8N"
+  payload       String    // JSON payload
+  status        String    @default("PENDING")  // PENDING, PROCESSING, COMPLETED, FAILED
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(3)
+  lastError     String?
+  scheduledFor  DateTime  @default(now())
+  processedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, scheduledFor])
+  @@index([eventType])
+}
+
+// =============================================================================
+// SECURITY EVENT LOGGING (P1 Security Sprint)
+// =============================================================================
+
+model SecurityEvent {
+  id          String   @id @default(uuid())
+  type        String   // RATE_LIMIT_CHECK, RATE_LIMIT_EXCEEDED, MAGIC_LINK_CREATED,
+                       // LOGIN_FAILED, LOGIN_SUCCESS, IDOR_ATTEMPT, SESSION_INVALIDATED
+  identifier  String   // IP address, user ID, or token
+  endpoint    String   // Which endpoint was accessed (e.g., "auth:login", "magic-links:create")
+  attempts    Int?     // For rate limiting - count of attempts in window
+  allowed     Boolean  // Whether the action was allowed
+  actorId     String?  // User ID if authenticated
+  dealId      String?  // Deal context if applicable
+  ipAddress   String?  // Client IP address
+  userAgent   String?  // Client user agent string
+  metadata    String?  // JSON for additional context
+  timestamp   DateTime @default(now())
+
+  @@index([type])
+  @@index([identifier])
+  @@index([timestamp])
+  @@index([actorId])
+  @@index([endpoint])
+  @@index([type, identifier, timestamp])  // For rate limit queries
+}
+
+// =============================================================================
+// GP COUNSEL / LEGAL MATTER TRACKING (Phase 1)
+// =============================================================================
+
+model LegalMatter {
+  id              String    @id @default(uuid())
+  organizationId  String
+
+  // Matter identity
+  matterNumber    String?                       // Auto-generated: ORG-YYYY-NNNN
+  title           String
+  description     String?
+
+  // Type classification
+  matterType      String                        // DEAL_SPECIFIC, ENTITY_CORPORATE, INVESTOR_RELATIONS, ONGOING_RECURRING
+  subType         String?                       // due_diligence, closing, amendment, llc_formation, etc.
+
+  // Related entities (for deal integration)
+  dealId          String?
+  dealName        String?                       // Denormalized for display
+  entityId        String?
+  lpActorId       String?
+
+  // Kanban workflow
+  stage           String    @default("NEW")     // NEW, IN_PROGRESS, COMPLETE
+  priority        String    @default("NORMAL")  // LOW, NORMAL, HIGH, URGENT
+
+  // Deadline tracking (for auto-aging)
+  dueDate         DateTime?
+  targetDate      DateTime?
+  stageEnteredAt  DateTime  @default(now())     // For aging calculation
+
+  // Assignment
+  assignedTo      String?
+  assignedToName  String?
+  assignedBy      String?
+  assignedByName  String?
+  assignedAt      DateTime?
+
+  // GC oversight
+  gcReviewRequired  Boolean   @default(false)
+  gcApprovalStatus  String?                     // PENDING, APPROVED, REJECTED
+
+  // Sign-off tracking
+  signOffType     String?                       // SIMPLE, CHECKLIST, CONDITIONAL
+  signOffStatus   String?                       // PENDING, APPROVED, REJECTED
+  signOffBy       String?
+  signOffByName   String?
+  signOffAt       DateTime?
+  signOffConditions String?                     // JSON array for conditional approvals
+
+  // Privilege marker (simple, no access control)
+  isPrivileged    Boolean   @default(false)
+
+  // Audit
+  createdBy       String
+  createdByName   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  closedAt        DateTime?
+
+  // Relations
+  activities      LegalMatterActivity[]
+  documents       LegalMatterDocument[]
+
+  @@index([organizationId, stage])
+  @@index([dealId])
+  @@index([dueDate])
+  @@index([assignedTo])
+  @@index([matterType])
+}
+
+model LegalMatterActivity {
+  id              String    @id @default(uuid())
+  matterId        String
+
+  // Activity type
+  activityType    String    // COMMENT, STATUS_CHANGE, ASSIGNMENT, SIGN_OFF, PRIORITY_CHANGE, AI_ANALYSIS
+
+  // Content
+  content         String?                       // Comment text or change description
+  previousValue   String?                       // For change tracking
+  newValue        String?                       // For change tracking
+  metadata        String?                       // JSON for additional data
+
+  // Actor
+  createdBy       String
+  createdByName   String?
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  matter          LegalMatter @relation(fields: [matterId], references: [id], onDelete: Cascade)
+
+  @@index([matterId, createdAt])
+  @@index([activityType])
+}
+
+// =============================================================================
+// LEGAL DOCUMENT MANAGEMENT (Phase 2)
+// =============================================================================
+
+model LegalMatterDocument {
+  id              String    @id @default(uuid())
+  matterId        String
+  organizationId  String
+
+  // Document reference
+  storageKey      String                          // Path to stored file
+  filename        String
+  mimeType        String
+  sizeBytes       Int
+  pageCount       Int?
+
+  // Classification
+  documentType    String                          // CONTRACT, LEASE, AMENDMENT, SIDE_LETTER, OPERATING_AGREEMENT, etc.
+  documentSubType String?
+
+  // Lifecycle
+  status          String    @default("UPLOADED")  // UPLOADED, ANALYZING, ANALYZED, FAILED
+  uploadedBy      String
+  uploadedByName  String?
+  uploadedAt      DateTime  @default(now())
+
+  // Document metadata
+  documentDate    DateTime?                       // Date on the document itself
+  effectiveDate   DateTime?
+  expirationDate  DateTime?
+  parties         String?                         // JSON array of party names
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  matter          LegalMatter @relation(fields: [matterId], references: [id], onDelete: Cascade)
+  analyses        LegalDocumentAnalysis[]
+  vaultDocuments  LegalVaultDocument[]
+
+  @@index([matterId])
+  @@index([organizationId])
+  @@index([documentType])
+  @@index([status])
+}
+
+model LegalDocumentAnalysis {
+  id              String    @id @default(uuid())
+  documentId      String
+  organizationId  String
+
+  // Analysis configuration
+  analysisType    String    @default("FULL")      // FULL, SUMMARY_ONLY, CLAUSE_CHECK
+  aiModel         String
+  aiPromptVersion String
+  aiLatencyMs     Int?
+
+  // Core results
+  extractedTerms  String                          // JSON: { parties, dates, amounts, ... }
+  summary         String                          // Markdown executive summary
+  riskScore       Int                             // 1-10
+  riskExplanation String
+
+  // Clause analysis (JSON)
+  identifiedClauses   String?                     // [{ type, text, pageNumber, ... }]
+  missingClauses      String?                     // [{ clause, severity, suggestion }]
+  unusualClauses      String?                     // [{ clause, concern, comparison }]
+
+  // Playbook results (if applicable)
+  playbookId          String?
+  playbookViolations  String?                     // [{ ruleId, clause, issue, severity }]
+  playbookScore       Int?                        // 0-100 compliance score
+
+  // Status
+  status          String    @default("COMPLETED") // COMPLETED, PARTIAL, FAILED
+  errorMessage    String?
+  overallConfidence Float   @default(0.8)
+
+  analyzedAt      DateTime  @default(now())
+  analyzedBy      String                          // userId or "SYSTEM"
+
+  // Relations
+  document        LegalMatterDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  playbook        ContractPlaybook? @relation(fields: [playbookId], references: [id])
+
+  @@index([documentId])
+  @@index([organizationId])
+  @@index([riskScore])
+  @@index([playbookId])
+}
+
+// =============================================================================
+// LEGAL VAULT (Bulk Document Container)
+// =============================================================================
+
+model LegalVault {
+  id              String    @id @default(uuid())
+  organizationId  String
+  matterId        String?                         // Optional link to matter
+
+  // Vault metadata
+  name            String
+  description     String?
+  vaultType       String    @default("GENERAL")   // GENERAL, DUE_DILIGENCE, LEASE_PORTFOLIO, CLOSING
+
+  // Status
+  status          String    @default("ACTIVE")    // ACTIVE, ARCHIVED, PROCESSING
+  documentCount   Int       @default(0)
+  lastAnalyzedAt  DateTime?
+
+  // Audit
+  createdBy       String
+  createdByName   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  documents       LegalVaultDocument[]
+  queries         LegalVaultQuery[]
+
+  @@index([organizationId])
+  @@index([matterId])
+  @@index([status])
+}
+
+model LegalVaultDocument {
+  id              String    @id @default(uuid())
+  vaultId         String
+  documentId      String                          // FK to LegalMatterDocument
+
+  // Metadata
+  addedAt         DateTime  @default(now())
+  addedBy         String
+  embeddingStatus String    @default("PENDING")   // PENDING, PROCESSING, READY, FAILED
+
+  // Relations
+  vault           LegalVault @relation(fields: [vaultId], references: [id], onDelete: Cascade)
+  document        LegalMatterDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([vaultId, documentId])
+  @@index([vaultId])
+  @@index([embeddingStatus])
+}
+
+model LegalVaultQuery {
+  id              String    @id @default(uuid())
+  vaultId         String
+  organizationId  String
+
+  // Query content
+  query           String                          // Natural language question
+  queryType       String    @default("SEARCH")    // SEARCH, COMPARISON, AGGREGATE
+
+  // Results (JSON)
+  results         String                          // [{ documentId, relevance, excerpt, pageNumber, ... }]
+  summary         String?                         // AI-generated summary of findings
+  documentHits    Int       @default(0)
+
+  // Performance
+  aiModel         String?
+  latencyMs       Int?
+
+  // Audit
+  queriedBy       String
+  queriedByName   String?
+  queriedAt       DateTime  @default(now())
+
+  // Relations
+  vault           LegalVault @relation(fields: [vaultId], references: [id], onDelete: Cascade)
+
+  @@index([vaultId])
+  @@index([organizationId])
+  @@index([queriedAt])
+}
+
+// =============================================================================
+// PHASE 4: VENDOR CRM + ENTITY MANAGEMENT
+// =============================================================================
+
+// ========== VENDOR CRM ==========
+
+model LegalVendor {
+  id              String    @id @default(uuid())
+  organizationId  String
+
+  vendorType      String    // LAW_FIRM, TITLE_COMPANY, SURVEYOR, ENVIRONMENTAL
+  name            String
+
+  // Contact info
+  primaryContact  String?
+  email           String?
+  phone           String?
+  address         String?
+
+  // Rates
+  defaultRate     Float?
+  rateNotes       String?
+
+  // Performance
+  rating          Float?    // 1-5 stars
+  notes           String?
+
+  // Tracking
+  totalMatters    Int       @default(0)
+  totalSpend      Float     @default(0)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  contacts        LegalVendorContact[]
+  engagements     LegalVendorEngagement[]
+
+  @@index([organizationId, vendorType])
+}
+
+model LegalVendorContact {
+  id              String    @id @default(uuid())
+  vendorId        String
+  name            String
+  title           String?
+  email           String?
+  phone           String?
+  isPrimary       Boolean   @default(false)
+
+  vendor          LegalVendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  @@index([vendorId])
+}
+
+model LegalVendorEngagement {
+  id              String    @id @default(uuid())
+  vendorId        String
+  matterId        String?
+  dealId          String?
+
+  scope           String?
+  estimatedCost   Float?
+  actualCost      Float?
+  status          String    // ACTIVE, COMPLETED, CANCELLED
+
+  startDate       DateTime?
+  endDate         DateTime?
+
+  createdAt       DateTime  @default(now())
+
+  vendor          LegalVendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  @@index([vendorId])
+}
+
+// ========== ENTITY MANAGEMENT ==========
+
+model LegalEntity {
+  id              String    @id @default(uuid())
+  organizationId  String
+
+  // Entity info
+  name            String
+  entityType      String    // LLC, LP, CORP, TRUST
+  jurisdiction    String?   // State of formation
+  einNumber       String?
+
+  // Status
+  status          String    @default("ACTIVE")  // ACTIVE, DISSOLVED, PENDING
+  formationDate   DateTime?
+  dissolutionDate DateTime?
+
+  // Registered agent
+  registeredAgent String?
+  registeredAddress String?
+
+  // Relationships (JSON for flexibility)
+  ownershipStructure String?  // JSON: [{ entityId, percentage, type }]
+  parentEntityId  String?
+
+  // Annual filings
+  nextAnnualFiling DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  documents       LegalEntityDocument[]
+
+  @@index([organizationId])
+  @@index([parentEntityId])
+}
+
+model LegalEntityDocument {
+  id              String    @id @default(uuid())
+  entityId        String
+  documentType    String    // OPERATING_AGREEMENT, CERTIFICATE, AMENDMENT, ANNUAL_REPORT
+  title           String
+  documentUrl     String?
+  effectiveDate   DateTime?
+
+  addedBy         String
+  addedAt         DateTime  @default(now())
+
+  entity          LegalEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  @@index([entityId])
+}
+
+// =============================================================================
+// PHASE 4 & 5: INTEGRATION SCAFFOLDING + GC OVERSIGHT
+// =============================================================================
+
+// ========== CALENDAR INTEGRATION (Phase 6 Prep) ==========
+
+model CalendarSync {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+
+  provider        String    // OUTLOOK, GOOGLE
+  providerUserId  String?   // OAuth user ID
+  accessToken     String?   // Encrypted
+  refreshToken    String?   // Encrypted
+  tokenExpiresAt  DateTime?
+  calendarId      String?   // Primary calendar ID
+
+  syncEnabled     Boolean   @default(false)
+  lastSyncAt      DateTime?
+  lastSyncStatus  String?   // SUCCESS, FAILED, PARTIAL
+  lastSyncError   String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  events          CalendarEvent[]
+
+  @@index([userId])
+  @@index([provider, syncEnabled])
+}
+
+model CalendarEvent {
+  id              String    @id @default(uuid())
+  calendarSyncId  String
+  organizationId  String
+
+  // Event identifiers
+  externalId      String?   // Provider's event ID
+  matterId        String?
+  dealId          String?
+
+  // Event details
+  title           String
+  description     String?
+  startTime       DateTime
+  endTime         DateTime
+  location        String?
+  isAllDay        Boolean   @default(false)
+
+  // Sync metadata
+  syncDirection   String    // PUSH, PULL, BOTH
+  lastSyncedAt    DateTime?
+  syncStatus      String?   // SYNCED, PENDING, FAILED
+  syncError       String?
+
+  // Reminders
+  reminderMinutes Int?      // Minutes before event
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  calendarSync    CalendarSync @relation(fields: [calendarSyncId], references: [id], onDelete: Cascade)
+
+  @@unique([calendarSyncId, externalId])
+  @@index([matterId])
+  @@index([dealId])
+  @@index([startTime])
+}
+
+// ========== COMMUNICATION LOG (Phase 4.3) ==========
+
+model CommunicationLog {
+  id              String    @id @default(uuid())
+  organizationId  String
+
+  // Communication type
+  type            String    // EMAIL, PHONE, MEETING, MESSAGE
+  direction       String    // INBOUND, OUTBOUND
+
+  // Participants
+  fromUserId      String?
+  fromExternal    String?   // External email/phone
+  toUserIds       String?   // JSON array of user IDs
+  toExternal      String?   // JSON array of external contacts
+  ccUserIds       String?   // JSON array
+  ccExternal      String?   // JSON array
+
+  // Content
+  subject         String?
+  body            String?
+  summary         String?   // AI-generated summary
+
+  // Context
+  matterId        String?
+  dealId          String?
+  vendorId        String?
+  entityId        String?
+  spaceId         String?
+
+  // Metadata
+  externalId      String?   // Email message ID, calendar event ID
+  duration        Int?      // Minutes (for calls/meetings)
+  attachments     String?   // JSON array of attachment metadata
+
+  // Tracking
+  isImportant     Boolean   @default(false)
+  isConfidential  Boolean   @default(false)
+  tags            String?   // JSON array
+
+  occurredAt      DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([organizationId, occurredAt])
+  @@index([matterId])
+  @@index([dealId])
+  @@index([vendorId])
+  @@index([type, occurredAt])
+}
+
+// ========== VENDOR PERFORMANCE METRICS ==========
+
+model VendorReview {
+  id              String    @id @default(uuid())
+  vendorId        String
+  organizationId  String
+
+  // Review details
+  reviewedBy      String
+  reviewedByName  String
+  engagementId    String?
+
+  // Ratings (1-5)
+  qualityRating   Int?
+  timelinessRating Int?
+  communicationRating Int?
+  valueRating     Int?
+  overallRating   Float
+
+  // Feedback
+  strengths       String?
+  weaknesses      String?
+  notes           String?
+  wouldUseAgain   Boolean?
+
+  reviewDate      DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+
+  @@index([vendorId])
+  @@index([organizationId])
+}
+
+// ========== GC OVERSIGHT ==========
+
+model TeamWorkloadSnapshot {
+  id              String    @id @default(uuid())
+  organizationId  String
+
+  snapshotDate    DateTime  @default(now())
+
+  // Workload by user (JSON)
+  workloadByUser  String    // { userId: { activeMatters, totalHours, urgentCount } }
+
+  // Team metrics
+  totalActiveMatters Int
+  totalPendingReviews Int
+  averageMattersPerUser Float
+  capacityUtilization Float   // 0-1 (percentage of capacity used)
+
+  createdAt       DateTime  @default(now())
+
+  @@index([organizationId, snapshotDate])
+}
+
+model LegalMetric {
+  id              String    @id @default(uuid())
+  organizationId  String
+
+  metricType      String    // MATTER_VOLUME, TURNAROUND_TIME, OUTSIDE_COUNSEL_SPEND
+  periodType      String    // DAILY, WEEKLY, MONTHLY, QUARTERLY
+  periodStart     DateTime
+  periodEnd       DateTime
+
+  metricValue     Float
+  metricUnit      String?   // matters, hours, dollars, days
+  breakdown       String?   // JSON
+
+  calculatedAt    DateTime  @default(now())
+
+  @@unique([organizationId, metricType, periodType, periodStart])
+  @@index([organizationId, metricType, periodStart])
+}
+
+// =============================================================================
+// CONTRACT PLAYBOOK (Custom Clause Checking)
+// =============================================================================
+
+model ContractPlaybook {
+  id              String    @id @default(uuid())
+  organizationId  String
+
+  // Playbook identity
+  name            String
+  description     String?
+  documentTypes   String                          // JSON array: ["LEASE", "PSA", "LOI", ...]
+
+  // Status
+  status          String    @default("DRAFT")     // DRAFT, ACTIVE, ARCHIVED
+  version         Int       @default(1)
+
+  // Audit
+  createdBy       String
+  createdByName   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  rules           PlaybookRule[]
+  analyses        LegalDocumentAnalysis[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@index([status])
+}
+
+model PlaybookRule {
+  id              String    @id @default(uuid())
+  playbookId      String
+
+  // Rule definition
+  ruleType        String                          // MUST_HAVE, MUST_NOT_HAVE, THRESHOLD, PATTERN
+  clauseCategory  String                          // indemnification, termination, liability_cap, insurance, assignment, etc.
+  ruleName        String
+  ruleDescription String?
+
+  // Detection criteria
+  searchPatterns  String                          // JSON: regex patterns or semantic descriptions
+  exampleText     String?                         // Example of compliant clause
+  antiPatterns    String?                         // JSON: patterns that indicate violation
+
+  // Severity and action
+  severity        String    @default("WARNING")   // INFO, WARNING, ERROR, CRITICAL
+  failureMessage  String                          // Message to show when rule fails
+  suggestedFix    String?                         // Recommendation for fixing
+
+  // For THRESHOLD type rules
+  thresholdField    String?                       // e.g., "liability_cap_amount"
+  thresholdOperator String?                       // GT, LT, GTE, LTE, EQ
+  thresholdValue    String?                       // e.g., "1000000" or "2x_contract_value"
+
+  // Ordering
+  sortOrder       Int       @default(0)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  playbook        ContractPlaybook @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+
+  @@index([playbookId])
+  @@index([clauseCategory])
+  @@index([severity])
+}
+
+// =============================================================================
+// ORGANIZATION DATA IMPORT / ONBOARDING (Phase 1)
+// =============================================================================
+// White-glove data import experience for new organizations.
+// Supports multi-channel intake (files, OAuth, email) with AI extraction.
+
+model OnboardingSession {
+  id                  String    @id @default(uuid())
+  organizationId      String
+
+  // Session status workflow
+  status              String    @default("SETUP")     // SETUP, UPLOADING, PROCESSING, REVIEW, TEAM_REVIEW, READY, LIVE
+  tier                String    @default("SELF_SERVICE")  // SELF_SERVICE, WHITE_GLOVE
+
+  // Category configuration (JSON arrays)
+  selectedCategories  String?                         // ["deals", "contacts", "properties"]
+  categoryPriorities  String?                         // ["deals", "contacts"] - processing order
+  historicalOption    String    @default("active")    // active, recent, all
+
+  // Progress tracking
+  totalRecords        Int       @default(0)
+  processedRecords    Int       @default(0)
+  verifiedRecords     Int       @default(0)
+
+  // Timing
+  estimatedCompletionAt DateTime?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  goLiveAt            DateTime?
+
+  // SLA tracking
+  slaDeadline         DateTime?
+  slaBreached         Boolean   @default(false)
+
+  // Team assignment (for white-glove)
+  assignedTo          String?                         // AuthUser ID of ops team member
+  assignedToName      String?
+
+  // Audit
+  createdBy           String
+  createdByName       String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  // Relations
+  intakeSources       OnboardingIntakeSource[]
+  claims              OnboardingClaim[]
+  conflicts           OnboardingConflict[]
+  dataLinks           OnboardingDataLink[]
+  quizResponses       OnboardingQuizResponse[]
+  adminNotes          OnboardingAdminNote[]
+  activities          OnboardingActivity[]
+  oauthConnections    OnboardingOAuthConnection[]
+  emailForwarders     OnboardingEmailForwarder[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([tier])
+  @@index([assignedTo])
+  @@index([slaDeadline])
+  @@index([createdAt])
+}
+
+// Intake sources - files, OAuth connections, emails
+model OnboardingIntakeSource {
+  id                String    @id @default(uuid())
+  sessionId         String
+
+  sourceType        String                            // FILE, OAUTH_GOOGLE, OAUTH_MICROSOFT, OAUTH_CRM, EMAIL
+
+  // For FILE type
+  fileName          String?
+  fileSize          Int?
+  mimeType          String?
+  storageKey        String?                           // S3/storage key for file
+  originalPath      String?                           // Original path if from folder upload
+
+  // For OAUTH type
+  oauthProvider     String?                           // google, microsoft, salesforce, hubspot, yardi, appfolio
+  oauthAccountId    String?
+  oauthAccountEmail String?
+  lastSyncAt        DateTime?
+  syncStatus        String?
+
+  // For EMAIL type
+  emailAddress      String?
+  emailMessageId    String?
+  emailSubject      String?
+  emailFrom         String?
+
+  // Processing status
+  status            String    @default("PENDING")     // PENDING, PROCESSING, COMPLETED, FAILED
+  processedAt       DateTime?
+  errorMessage      String?
+
+  // Results
+  recordsExtracted  Int       @default(0)
+  claimsGenerated   Int       @default(0)
+
+  createdAt         DateTime  @default(now())
+
+  session           OnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  claims            OnboardingClaim[]
+
+  @@index([sessionId])
+  @@index([sourceType])
+  @@index([status])
+}
+
+// Extracted claims with full provenance
+model OnboardingClaim {
+  id                String    @id @default(uuid())
+  sessionId         String
+  sourceId          String?                           // OnboardingIntakeSource reference
+
+  // Category and record identification
+  category          String                            // DEAL, CONTACT, PROPERTY, DOCUMENT, LP_RECORD, FINANCIAL
+  recordType        String?                           // Sub-type within category
+  recordKey         String?                           // External ID or generated key for grouping
+  recordTitle       String?                           // Display title for the record
+
+  // Field data
+  fieldPath         String                            // e.g., "propertyName", "address.city"
+  fieldLabel        String?                           // Human-readable label
+  value             String?                           // Raw value
+  displayValue      String?                           // Formatted display value
+  dataType          String?                           // string, number, date, currency, boolean, json
+
+  // Source provenance
+  sourceType        String                            // FILE, OAUTH, EMAIL, AI_INFERRED
+  documentName      String?
+  pageNumber        Int?
+  cellReference     String?                           // e.g., "Sheet1!B5"
+  textSnippet       String?                           // Surrounding text for context
+
+  // AI extraction metadata
+  confidence        Float     @default(0.5)
+  extractionMethod  String?                           // REGEX, LLM, OCR, MANUAL, RULE_BASED
+  aiRationale       String?                           // AI explanation for extraction
+  aiModelVersion    String?                           // Which model version extracted this
+
+  // Verification status
+  status            String    @default("UNVERIFIED")  // UNVERIFIED, VERIFIED, REJECTED, CONFLICTED
+  verifiedAt        DateTime?
+  verifiedBy        String?
+  verifiedByName    String?
+  correctedValue    String?                           // User-corrected value
+  rejectionReason   String?
+
+  // Sensitive data handling
+  isSensitive       Boolean   @default(false)
+  sensitiveType     String?                           // SSN, BANK_ACCOUNT, EIN, etc.
+  encryptedValue    String?                           // Encrypted version if sensitive
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  session           OnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  source            OnboardingIntakeSource? @relation(fields: [sourceId], references: [id])
+  conflictsA        OnboardingConflict[] @relation("ClaimA")
+  conflictsB        OnboardingConflict[] @relation("ClaimB")
+
+  @@index([sessionId])
+  @@index([sourceId])
+  @@index([category])
+  @@index([recordKey])
+  @@index([status])
+  @@index([confidence])
+}
+
+// Data conflicts between sources
+model OnboardingConflict {
+  id                String    @id @default(uuid())
+  sessionId         String
+
+  // What field is conflicting
+  recordKey         String?
+  fieldPath         String
+  fieldLabel        String?
+
+  // Conflicting claims
+  claimAId          String
+  claimBId          String?
+
+  // Conflict details
+  valueA            String?
+  valueB            String?
+  sourceA           String?                           // Description of source A
+  sourceB           String?                           // Description of source B
+
+  // Resolution
+  status            String    @default("UNRESOLVED")  // UNRESOLVED, AI_SUGGESTED, USER_RESOLVED, ADMIN_RESOLVED
+  resolutionMethod  String?                           // CHOSE_A, CHOSE_B, AVERAGED, MANUAL_OVERRIDE
+  resolvedValue     String?
+  resolvedBy        String?
+  resolvedByName    String?
+  resolvedAt        DateTime?
+
+  // AI suggestion
+  aiSuggestedMethod String?
+  aiSuggestedValue  String?
+  aiConfidence      Float?
+  aiRationale       String?
+
+  createdAt         DateTime  @default(now())
+
+  session           OnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  claimA            OnboardingClaim @relation("ClaimA", fields: [claimAId], references: [id])
+  claimB            OnboardingClaim? @relation("ClaimB", fields: [claimBId], references: [id])
+
+  @@index([sessionId])
+  @@index([status])
+  @@index([recordKey])
+}
+
+// Discovered data links (the "wow factor")
+model OnboardingDataLink {
+  id                String    @id @default(uuid())
+  sessionId         String
+
+  // Link details
+  linkType          String                            // CONTACT_DEAL, CONTACT_ENTITY, LP_DEAL, DEAL_PROPERTY, DUPLICATE_ENTITY
+
+  sourceRecordType  String                            // e.g., "CONTACT"
+  sourceRecordKey   String
+  sourceRecordTitle String?
+
+  targetRecordType  String                            // e.g., "DEAL"
+  targetRecordKey   String
+  targetRecordTitle String?
+
+  // Relationship details
+  relationshipType  String?                           // e.g., "BROKER_ON_DEAL", "LP_INVESTOR", "SAME_ENTITY"
+
+  // Matching metadata
+  matchConfidence   Float
+  matchMethod       String                            // NAME_MATCH, EMAIL_MATCH, ADDRESS_MATCH, PHONE_MATCH, ML_INFERRED
+  matchEvidence     String?                           // JSON of matching fields/reasons
+
+  // Verification
+  status            String    @default("PENDING")     // PENDING, CONFIRMED, REJECTED
+  verifiedBy        String?
+  verifiedByName    String?
+  verifiedAt        DateTime?
+  rejectionReason   String?
+
+  createdAt         DateTime  @default(now())
+
+  session           OnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([status])
+  @@index([linkType])
+  @@index([matchConfidence])
+}
+
+// Verification quiz responses
+model OnboardingQuizResponse {
+  id                String    @id @default(uuid())
+  sessionId         String
+
+  // Question details
+  questionId        String                            // Generated question ID
+  questionText      String
+  questionType      String    @default("MULTIPLE_CHOICE")  // MULTIPLE_CHOICE, WRITE_IN
+
+  // Options presented
+  optionA           String?
+  optionASource     String?
+  optionB           String?
+  optionBSource     String?
+  optionC           String?
+  optionCSource     String?
+
+  // User response
+  selectedOption    String?                           // A, B, C, or OTHER
+  customValue       String?                           // For write-in responses
+
+  // Correctness tracking
+  expectedValue     String?
+  isCorrect         Boolean?
+
+  respondedAt       DateTime  @default(now())
+  respondedBy       String?
+  respondedByName   String?
+
+  session           OnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([questionType])
+}
+
+// Admin notes (internal, not visible to customer)
+model OnboardingAdminNote {
+  id                String    @id @default(uuid())
+  sessionId         String
+
+  content           String
+  noteType          String    @default("GENERAL")     // GENERAL, ESCALATION, SLA, QUALITY, QUESTION
+
+  // For questions to customer
+  isQuestionToCustomer Boolean @default(false)
+  questionAnswered  Boolean   @default(false)
+  customerAnswer    String?
+  answeredAt        DateTime?
+
+  createdBy         String
+  createdByName     String?
+  createdAt         DateTime  @default(now())
+
+  session           OnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([noteType])
+}
+
+// Activity feed for real-time updates
+model OnboardingActivity {
+  id                String    @id @default(uuid())
+  sessionId         String
+
+  activityType      String                            // EXTRACTION, VERIFICATION, QUESTION, ERROR, LINK_DISCOVERED, STAGE_CHANGE
+  message           String
+  details           String?                           // JSON for additional context
+
+  // Related entities
+  sourceId          String?                           // IntakeSource if relevant
+  claimId           String?                           // Claim if relevant
+  conflictId        String?                           // Conflict if relevant
+  linkId            String?                           // DataLink if relevant
+
+  createdAt         DateTime  @default(now())
+
+  session           OnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([activityType])
+  @@index([createdAt])
+}
+
+// OAuth connections (persistent across sessions)
+model OAuthConnection {
+  id                String    @id @default(uuid())
+  organizationId    String
+  userId            String
+
+  provider          String                            // google, microsoft, salesforce, hubspot, yardi, appfolio
+  accountId         String?
+  accountEmail      String?
+  accountName       String?
+
+  // Tokens (should be encrypted in production)
+  accessToken       String?
+  refreshToken      String?
+  tokenExpiresAt    DateTime?
+  scopes            String?                           // JSON array of granted scopes
+
+  // Sync configuration
+  syncEnabled       Boolean   @default(true)
+  syncInterval      String?                           // REALTIME, HOURLY, DAILY, WEEKLY
+  lastSyncAt        DateTime?
+  lastSyncStatus    String?                           // SUCCESS, FAILED
+  lastSyncError     String?
+
+  // Data scope
+  dataTypes         String?                           // JSON array: ["contacts", "documents", "emails"]
+
+  // Connection state
+  status            String    @default("CONNECTED")   // CONNECTED, DISCONNECTED, EXPIRED, ERROR
+  connectedAt       DateTime  @default(now())
+  disconnectedAt    DateTime?
+
+  @@unique([organizationId, provider, accountId])
+  @@index([organizationId])
+  @@index([provider])
+  @@index([status])
+}
+
+// Dedicated email inbox for forwarding
+model OnboardingEmailInbox {
+  id                String    @id @default(uuid())
+  organizationId    String    @unique
+
+  emailAddress      String    @unique                 // e.g., import-abc123@import.canonical.com
+
+  // Stats
+  messagesReceived  Int       @default(0)
+  lastReceivedAt    DateTime?
+
+  // Status
+  isActive          Boolean   @default(true)
+
+  createdAt         DateTime  @default(now())
+
+  @@index([emailAddress])
+  @@index([isActive])
+}
+
+// Custom field definitions created during import
+model CustomFieldDefinition {
+  id                String    @id @default(uuid())
+  organizationId    String
+
+  fieldName         String                            // Internal name (snake_case)
+  fieldLabel        String                            // Display label
+  fieldType         String                            // TEXT, NUMBER, DATE, CURRENCY, BOOLEAN, SELECT, MULTI_SELECT, JSON
+  entityType        String                            // DEAL, CONTACT, PROPERTY, LP_ACTOR, DOCUMENT
+
+  // For SELECT types
+  options           String?                           // JSON array of options
+
+  // Validation
+  isRequired        Boolean   @default(false)
+  validationRules   String?                           // JSON validation config
+
+  // Schema integration status
+  integrationStatus String    @default("PENDING")     // PENDING, APPROVED, INTEGRATED, REJECTED
+  integratedAt      DateTime?
+  integratedBy      String?
+  rejectionReason   String?
+
+  // Source tracking
+  createdFromImport Boolean   @default(false)
+  onboardingSessionId String?
+
+  createdBy         String
+  createdByName     String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([organizationId, entityType, fieldName])
+  @@index([organizationId])
+  @@index([entityType])
+  @@index([integrationStatus])
+}
+
+// Onboarding processing log (for debugging)
+model OnboardingProcessingLog {
+  id                String    @id @default(uuid())
+  sessionId         String
+  correlationId     String                            // UUID for tracing related logs
+
+  level             String    @default("INFO")        // DEBUG, INFO, WARN, ERROR
+  component         String                            // EXTRACTOR, LINKER, VALIDATOR, etc.
+  message           String
+
+  // Context
+  sourceId          String?
+  claimId           String?
+
+  // Details
+  details           String?                           // JSON for structured data
+  duration          Int?                              // Operation duration in ms
+  tokensUsed        Int?                              // For AI operations
+
+  createdAt         DateTime  @default(now())
+
+  @@index([sessionId])
+  @@index([correlationId])
+  @@index([level])
+  @@index([component])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// PHASE 4: OAuth & Email Integration Models
+// =============================================================================
+
+// OAuth connections for external data sources
+model OnboardingOAuthConnection {
+  id                  String    @id @default(uuid())
+  sessionId           String
+  organizationId      String
+
+  // Provider details
+  provider            String                            // GOOGLE, MICROSOFT, SALESFORCE, HUBSPOT, YARDI, APPFOLIO
+  providerAccountId   String?                           // Unique ID from provider
+  providerEmail       String?                           // Account email/identifier
+
+  // OAuth tokens (encrypted in production)
+  accessToken         String?                           // Encrypted access token
+  refreshToken        String?                           // Encrypted refresh token
+  tokenExpiresAt      DateTime?
+  scopes              String?                           // JSON array of granted scopes
+
+  // Sync configuration
+  syncEnabled         Boolean   @default(true)
+  syncFrequency       String    @default("MANUAL")      // MANUAL, HOURLY, DAILY, REALTIME
+  lastSyncAt          DateTime?
+  lastSyncStatus      String?                           // SUCCESS, FAILED, PARTIAL
+  lastSyncRecords     Int       @default(0)
+  lastSyncError       String?
+
+  // Connection status
+  status              String    @default("PENDING")     // PENDING, CONNECTED, DISCONNECTED, EXPIRED, ERROR
+  connectedAt         DateTime?
+  disconnectedAt      DateTime?
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  session             OnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  syncHistory         OnboardingOAuthSyncHistory[]
+
+  @@unique([organizationId, provider])
+  @@index([sessionId])
+  @@index([organizationId])
+  @@index([provider])
+  @@index([status])
+}
+
+// OAuth sync history for audit trail
+model OnboardingOAuthSyncHistory {
+  id                  String    @id @default(uuid())
+  connectionId        String
+  sessionId           String
+
+  // Sync details
+  syncType            String                            // MANUAL, SCHEDULED, INITIAL
+  status              String    @default("STARTED")     // STARTED, COMPLETED, FAILED, PARTIAL
+  recordsFetched      Int       @default(0)
+  recordsCreated      Int       @default(0)
+  recordsUpdated      Int       @default(0)
+  recordsSkipped      Int       @default(0)
+
+  // Timing
+  startedAt           DateTime  @default(now())
+  completedAt         DateTime?
+  duration            Int?                              // Duration in ms
+
+  // Error tracking
+  errorMessage        String?
+  errorDetails        String?                           // JSON for structured error info
+
+  // Token usage (for AI processing of synced data)
+  tokensUsed          Int       @default(0)
+
+  connection          OnboardingOAuthConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId])
+  @@index([sessionId])
+  @@index([status])
+  @@index([startedAt])
+}
+
+// Email forwarder configuration for each organization
+model OnboardingEmailForwarder {
+  id                  String    @id @default(uuid())
+  sessionId           String
+  organizationId      String
+
+  // Email configuration
+  inboundEmail        String    @unique               // e.g., import-abc123@import.canonical.com
+  forwardingEnabled   Boolean   @default(true)
+
+  // Sender filtering (JSON array of allowed domains/emails)
+  allowedSenders      String?                         // ["@acme.com", "john@external.com"]
+  blockedSenders      String?                         // ["spam@bad.com"]
+
+  // Processing options
+  autoClassify        Boolean   @default(true)        // Auto-classify attachments
+  extractAttachments  Boolean   @default(true)
+  extractBodyContent  Boolean   @default(false)
+
+  // Stats
+  emailsReceived      Int       @default(0)
+  emailsProcessed     Int       @default(0)
+  emailsRejected      Int       @default(0)
+  attachmentsProcessed Int      @default(0)
+
+  // Status
+  status              String    @default("ACTIVE")    // ACTIVE, PAUSED, DISABLED
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  session             OnboardingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  emails              OnboardingEmailLog[]
+
+  @@unique([organizationId])
+  @@index([sessionId])
+  @@index([inboundEmail])
+  @@index([status])
+}
+
+// Email processing log
+model OnboardingEmailLog {
+  id                  String    @id @default(uuid())
+  forwarderId         String
+  sessionId           String
+
+  // Email details
+  messageId           String    @unique               // Email Message-ID header
+  fromEmail           String
+  fromName            String?
+  toEmail             String
+  subject             String?
+  receivedAt          DateTime
+
+  // Processing
+  status              String    @default("PENDING")   // PENDING, PROCESSING, COMPLETED, FAILED, REJECTED
+  rejectionReason     String?                         // SENDER_NOT_ALLOWED, EMPTY_EMAIL, etc.
+  processedAt         DateTime?
+
+  // Attachments
+  attachmentCount     Int       @default(0)
+  attachmentNames     String?                         // JSON array of file names
+  attachmentsProcessed Int      @default(0)
+
+  // Extraction results
+  claimsExtracted     Int       @default(0)
+  intakeSourceIds     String?                         // JSON array of created intake source IDs
+
+  // Body content (if extractBodyContent enabled)
+  bodySnippet         String?                         // First 500 chars of body for reference
+
+  forwarder           OnboardingEmailForwarder @relation(fields: [forwarderId], references: [id], onDelete: Cascade)
+
+  @@index([forwarderId])
+  @@index([sessionId])
+  @@index([fromEmail])
+  @@index([status])
+  @@index([receivedAt])
 }

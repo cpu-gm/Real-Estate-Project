@@ -1,6 +1,8 @@
 import { PrismaClient } from '@prisma/client';
 import { validateMagicLinkToken, consumeToken } from '../services/magic-link-service.js';
 import { kernelFetchJson } from '../kernel.js';
+import { LenderApproveSchema } from '../middleware/route-schemas.js';
+import { createValidationLogger } from '../services/validation-logger.js';
 
 const prisma = new PrismaClient();
 const KERNEL_API_URL = process.env.KERNEL_API_URL || 'http://localhost:3001';
@@ -149,8 +151,27 @@ export async function handleLenderApprove(req, res, token, readJsonBody) {
     }
 
     const { dealId, recipientEmail, recipientRole } = validation.payload;
-    const body = await readJsonBody(req);
-    const { comment } = body || {};
+
+    const validationLog = createValidationLogger('handleLenderApprove');
+    const rawBody = await readJsonBody(req);
+    validationLog.beforeValidation(rawBody);
+
+    // Validate with Zod schema
+    const parseResult = LenderApproveSchema.safeParse(rawBody ?? {});
+    if (!parseResult.success) {
+      validationLog.validationFailed(parseResult.error.errors);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: 'Validation failed',
+        code: 'VALIDATION_FAILED',
+        errors: parseResult.error.errors
+      }));
+      return;
+    }
+
+    const body = parseResult.data;
+    validationLog.afterValidation(body);
+    const { comment } = body;
 
     // Find the submission
     const submission = await prisma.dealSubmission.findFirst({

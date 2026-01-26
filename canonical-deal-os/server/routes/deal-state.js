@@ -21,6 +21,8 @@ import {
 import { PrismaClient } from '@prisma/client';
 import { extractAuthUser } from './auth.js';
 import { readStore } from '../store.js';
+import { createValidationLogger } from '../services/validation-logger.js';
+import { TransitionStateSchema } from '../middleware/route-schemas.js';
 
 const prisma = new PrismaClient();
 
@@ -141,23 +143,40 @@ async function handleGetDealState(req, res, dealId) {
 
 /**
  * Perform state transition
+ *
+ * T1.3 (P1 Security Sprint): Removed unused resolveUserId/resolveActorRole params
+ * Uses requireGPWithDealAccess internally for validated JWT identity
  */
-async function handleTransitionState(req, res, dealId, readJsonBody, resolveUserId, resolveActorRole) {
+async function handleTransitionState(req, res, dealId, readJsonBody) {
   // Require GP/Admin role and org access for state transitions
   const authUser = await requireGPWithDealAccess(req, res, dealId);
   if (!authUser) return;
 
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleTransitionState');
+  validationLog.beforeValidation(body);
+
+  const parsed = TransitionStateSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const { toState, reason, approvals, force } = parsed.data;
+
   try {
-    const body = await readJsonBody(req);
-    const { toState, reason, approvals, force } = body || {};
-
-    if (!toState) {
-      return sendJson(res, 400, {
-        success: false,
-        error: 'toState is required'
-      });
-    }
-
     if (!DEAL_STATES[toState]) {
       return sendJson(res, 400, {
         success: false,
@@ -204,8 +223,11 @@ async function handleTransitionState(req, res, dealId, readJsonBody, resolveUser
 
 /**
  * Get available state transitions
+ *
+ * T1.3 (P1 Security Sprint): Removed unused resolveUserId/resolveActorRole params
+ * Uses requireDealOrgAccess internally for validated JWT identity
  */
-async function handleGetAvailableTransitions(req, res, dealId, resolveUserId, resolveActorRole) {
+async function handleGetAvailableTransitions(req, res, dealId) {
   // Require authentication and org access
   const authUser = await requireDealOrgAccess(req, res, dealId);
   if (!authUser) return;

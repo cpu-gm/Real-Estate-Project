@@ -1,4 +1,9 @@
 {
+  "_meta": {
+    "source": "POST /api/deals/:id/explain (response)",
+    "schema": "explainBlockSchema",
+    "createdAt": "2026-01-21"
+  },
   "_comment": "Response when an action is blocked - kernel explains why and how to fix",
   "action": "APPROVE_DEAL",
   "_action_comment": "The action that was attempted: APPROVE_DEAL, FINALIZE_CLOSING, etc.",

@@ -75,12 +75,23 @@ services:
       # Cache Configuration
       BFF_LP_PORTAL_TTL_MS: 5000
       BFF_LP_INVITATION_EXPIRY_DAYS: 30
-      
+
+      # Redis Configuration (Rate Limiting + Caching)
+      REDIS_URL: redis://redis:6379
+      RATE_LIMIT_WINDOW_MS: 900000
+      RATE_LIMIT_MAX_ATTEMPTS: 5
+
+      # JWT Authentication (P1 Security)
+      # Generate with: node -e "console.log(require('crypto').randomBytes(64).toString('base64'))"
+      JWT_SECRET: ${JWT_SECRET:-}
+
       # Debug
       BFF_EMAIL_DEV_MODE: "true"
       NODE_ENV: development
     depends_on:
       kernel:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - ./canonical-deal-os:/app
@@ -92,6 +103,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Redis for Rate Limiting and Caching
+  redis:
+    image: redis:7-alpine
+    container_name: canonical-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
 
   # Mailhog for Email Testing
   mailhog:
@@ -115,6 +141,7 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
 
 networks:
   default:

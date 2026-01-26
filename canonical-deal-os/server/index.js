@@ -5,6 +5,27 @@ import { kernelRequest, proxyKernelStream } from "./kernel.js";
 import { memoizeInFlight, deleteCacheByPrefix } from "./runtime.js";
 import { getPrisma } from "./db.js";
 import { readStore } from "./store.js";
+import { withErrorHandling } from "./middleware/request-logger.js";
+import { ApiError, isApiError } from "./lib/api-error.js";
+import { startErrorWatcher } from "./lib/error-watcher.js";
+import { logErrorForClaude } from "./lib/error-log.js";
+import { writeDetailedErrorLog } from "./lib/error-context.js";
+import { applySecurityHeaders } from "./middleware/security-headers.js";
+import { applyCorsHeaders, handleCorsPrelight } from "./middleware/cors.js";
+
+// Observability (Sprint 2)
+import { initSentry, captureException, flushSentry } from "./lib/sentry.js";
+import {
+  recordHttpRequest,
+  recordError,
+  incrementConnections,
+  decrementConnections,
+  getMetrics,
+  getMetricsContentType
+} from "./lib/metrics.js";
+import { createLogger, logRequest as logStructuredRequest, logError } from "./lib/logger.js";
+
+const serverLog = createLogger('server');
 
 // Import route handlers
 import {
@@ -31,6 +52,7 @@ import {
   handleLPPortalDealDetail,
   handleLPPortalExport,
   handleListLPActors,
+  handleListAllLPActors,
   handleBulkLPImport,
   handleGenerateCustomReport
 } from "./routes/lp-onboarding.js";
@@ -187,8 +209,13 @@ import {
 import {
   handleListDealAssignments,
   handleAssignAnalyst,
-  handleUnassignAnalyst
+  handleUnassignAnalyst,
+  handleBulkAssignAnalyst
 } from "./routes/deal-assignments.js";
+import {
+  handleGetUsers as handleGetOrgUsers,
+  handleGetRecentUsers
+} from "./routes/users.js";
 import {
   handleCreateReviewRequest,
   handleListReviewRequests,
@@ -311,7 +338,10 @@ import {
 import {
   handleDebugStatus,
   handleDebugErrors,
-  handleDebugClear
+  handleDebugClear,
+  handleDebugResetRateLimit,
+  handleDebugCircuits,
+  handleDebugCircuitsReset
 } from "./routes/debug.js";
 import {
   handleSignup,
@@ -327,7 +357,9 @@ import {
   handleApproveVerification,
   handleRejectVerification,
   handleUpdateUserRole,
-  handleUpdateUserStatus
+  handleUpdateUserStatus,
+  handleBulkApproveVerification,
+  handleBulkRejectVerification
 } from "./routes/admin.js";
 import { requireLPEntitlement } from "./middleware/auth.js";
 import {
@@ -342,7 +374,8 @@ import {
   handleMarkWireInitiated,
   handleUploadWireProof,
   handleMarkFunded,
-  handleGenerateCapitalCallNotices
+  handleGenerateCapitalCallNotices,
+  handleCapitalCallsSummary
 } from "./routes/capital-calls.js";
 import {
   handleListDistributions,
@@ -354,7 +387,8 @@ import {
   handleCancelDistribution,
   handleGetMyDistributions,
   handleGetMyDistributionDetail,
-  handleGenerateDistributionStatements
+  handleGenerateDistributionStatements,
+  handleDistributionsSummary
 } from "./routes/distributions.js";
 import {
   handleListInvestorUpdates,
@@ -375,29 +409,172 @@ import { dispatchSellerRoutes } from "./routes/seller-portal.js";
 import { dispatchDistributionRoutes } from "./routes/distribution.js";
 import { dispatchBuyerRoutes } from "./routes/buyer-portal.js";
 import { dispatchPermissionGateRoutes } from "./routes/permission-gate.js";
+import { dispatchBrokerageRoutes } from "./routes/brokerages.js";
+import { dispatchListingAgreementRoutes } from "./routes/listing-agreements.js";
+import { dispatchContactRoutes } from "./routes/contacts.js";
+import { dispatchBrokerDashboardRoutes } from "./routes/broker-dashboard.js";
+import { dispatchOnboardingRoutes } from "./routes/onboarding.js";
+import {
+  handleListMatters,
+  handleCreateMatter,
+  handleGetMatter,
+  handleUpdateMatter,
+  handleChangeMatterStage,
+  handleAssignMatter,
+  handleSignOff,
+  handleGetActivities,
+  handleAddActivity
+} from "./routes/legal-matters.js";
+import {
+  handleGetDashboard as handleGetLegalDashboard,
+  handleGetDealLegalContext,
+  handleGetStats as handleGetLegalStats
+} from "./routes/legal-dashboard.js";
+import {
+  handleListMatterDocuments,
+  handleUploadDocument,
+  handleGetDocument,
+  handleDeleteDocument,
+  handleAnalyzeDocument,
+  handleGetAnalysis,
+  handleAnalyzeWithPlaybook
+} from "./routes/legal-documents.js";
+import {
+  handleListPlaybooks,
+  handleCreatePlaybook,
+  handleGetPlaybook,
+  handleUpdatePlaybook,
+  handleDeletePlaybook,
+  handleAddRule,
+  handleUpdateRule,
+  handleDeleteRule,
+  handleTestPlaybook,
+  handleGetSuggestions as handleGetPlaybookSuggestions
+} from "./routes/legal-playbook.js";
+import {
+  handleListVaults,
+  handleCreateVault,
+  handleGetVault,
+  handleUpdateVault,
+  handleDeleteVault,
+  handleListVaultDocuments,
+  handleAddVaultDocuments,
+  handleRemoveVaultDocument,
+  handleVaultQuery,
+  handleListQueries,
+  handleCompareDocuments,
+  handleGenerateReport
+} from "./routes/legal-vault.js";
+import {
+  handleListSpaces,
+  handleCreateSpace,
+  handleGetSpace,
+  handleUpdateSpace,
+  handleDeleteSpace,
+  handleAddMember,
+  handleRemoveMember,
+  handleUpdateMemberRole,
+  handleAddDocument,
+  handleRemoveDocument,
+  handleGetMessages,
+  handleSendMessage as handleSendSpaceMessage,
+  handleGetActivity
+} from "./routes/legal-shared-spaces.js";
+import {
+  handleValidateToken,
+  handleGetDocuments as handleGetExternalDocuments,
+  handleDownloadDocument as handleDownloadExternalDocument,
+  handleGetMessages as handleGetExternalMessages,
+  handleSendMessage as handleSendExternalMessage,
+  handleUploadDocument as handleUploadExternalDocument
+} from "./routes/legal-shared-spaces-external.js";
+import {
+  handleListVendors,
+  handleCreateVendor,
+  handleGetVendor,
+  handleUpdateVendor,
+  handleAddContact,
+  handleCreateEngagement,
+  handleAddReview,
+  handleCompareVendors
+} from "./routes/legal-vendors.js";
+import {
+  handleListEntities,
+  handleCreateEntity,
+  handleGetEntity,
+  handleUpdateEntity,
+  handleGetOrgChart,
+  handleAddDocument as handleAddEntityDocument,
+  handleFilingReminders,
+  handleRelatedDeals
+} from "./routes/legal-entities.js";
+import {
+  handleGetApprovalQueue,
+  handleRequestGCReview,
+  handleApproveGCReview,
+  handleRejectGCReview
+} from "./routes/legal-gc-approval.js";
+import {
+  handleGenerateEmail,
+  handleCreateGPApprovalTask,
+  handleApproveEmailDraft,
+  handleRejectEmailDraft,
+  handleSendEmail,
+  handleSendDirectEmail,
+  handleCreateNotification,
+  handleUpdateReminderState,
+  handleExpireInvitation,
+  handleCheckInvitationStatus,
+  handleListEmailDrafts,
+  handleGetEmailDraft,
+  handleGetDistributionDetails,
+  handleGetDealLPActors,
+  handleGetCapitalCallDetails,
+  handleGetUnfundedAllocations,
+  // Scheduler migration endpoints
+  handleDeadlineScan,
+  handleEscalationScan,
+  handleSnoozeScan,
+  handleProcessReminder,
+  handleProcessEscalation,
+  handleProcessSnoozeExpiry,
+  handleLogSchedulerCompletion
+} from "./routes/n8n-callbacks.js";
+import { handleTwilioStatusCallback, handleN8nSendSms } from "./services/sms-service.js";
 
 const PORT = Number(process.env.BFF_PORT ?? 8787);
 const KERNEL_BASE_URL = process.env.KERNEL_API_URL ?? "http://localhost:3001";
 const HEALTH_TIMEOUT_MS = Number(process.env.BFF_HEALTH_TIMEOUT_MS ?? 2000);
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, X-User-Id, X-Canonical-User-Id, X-Actor-Role, X-Idempotency-Key",
-  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS"
-};
-
 const inFlight = memoizeInFlight();
 
 function sendJson(res, status, payload) {
+  // Security headers and CORS already applied in handleRequest
   res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    ...corsHeaders
+    "Content-Type": "application/json; charset=utf-8"
   });
   res.end(JSON.stringify(payload));
 }
 
 function sendError(res, status, message, details) {
+  // Log errors to Claude's file for debugging
+  if (status >= 400) {
+    const req = res._req; // Attached by withErrorHandling wrapper
+    const errorData = {
+      requestId: req?.requestId || null,
+      method: req?.method || 'UNKNOWN',
+      path: req?.url?.split('?')[0] || 'UNKNOWN',
+      status,
+      code: status >= 500 ? 'INTERNAL_ERROR' : (status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'FORBIDDEN' : status === 404 ? 'NOT_FOUND' : 'VALIDATION_FAILED'),
+      message,
+      details: details ?? null
+    };
+    logErrorForClaude(errorData);
+    // Write detailed context (async, don't wait)
+    if (req) {
+      writeDetailedErrorLog(errorData, req).catch(() => {});
+    }
+  }
   sendJson(res, status, { message, details: details ?? null });
 }
 
@@ -432,12 +609,23 @@ function resolveDebugUserId(req) {
 }
 
 /**
- * DEPRECATED: Legacy resolveUserId for backwards compatibility
- * WARNING: Always prefer authUser.id from extractAuthUser()
- * This function should only be used when authUser is already validated at dispatch level
+ * @deprecated T1.3 (P1 Security Sprint) - DO NOT USE FOR NEW CODE
+ *
+ * SECURITY WARNING: This function previously read from X-User-Id header which
+ * can be spoofed by clients. For authorization and identity:
+ *   - Use authUser.id from extractAuthUser() (validated JWT)
+ *   - Never trust client-provided headers for identity
+ *
+ * Migration path:
+ *   1. Update dispatch in index.js to pass authUser instead of resolveUserId
+ *   2. Update handler signature to accept authUser instead of resolveUserId
+ *   3. Use authUser.id instead of resolveUserId(req)
+ *
+ * ESLint rule 'security/no-unsafe-headers' now blocks this function.
+ * This function remains only for backwards compatibility during migration.
  */
-function resolveUserId(req) {
-  // In production, this returns 'anonymous' but callers should use authUser.id instead
+function resolveUserId(req) { // eslint-disable-line security/no-unsafe-headers -- Legacy function being migrated, see T1.3
+  // WARNING: For authorization, use authUser.id from validated JWT, not this function!
   const debugId = resolveDebugUserId(req); // eslint-disable-line security/no-unsafe-headers -- Legacy function, callers should use authUser.id
   if (debugId) return debugId;
   // Fallback to authorization header (NOT validated here - just for logging/display)
@@ -484,6 +672,94 @@ async function readJsonBody(req) {
     error.status = 400;
     error.data = { message: "Invalid JSON" };
     throw error;
+  }
+}
+
+/**
+ * Parse multipart form data (for SendGrid webhook, etc.)
+ * Returns an object with form fields and files
+ */
+async function parseMultipartFormData(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) {
+    return null;
+  }
+
+  const raw = Buffer.concat(chunks).toString("utf8");
+  const contentType = req.headers['content-type'] || '';
+
+  // Check if it's URL-encoded form data (SendGrid default)
+  if (contentType.includes('application/x-www-form-urlencoded')) {
+    const params = new URLSearchParams(raw);
+    const result = {};
+    for (const [key, value] of params.entries()) {
+      // Handle array-like keys (attachment1, attachment2, etc.)
+      if (result[key] !== undefined) {
+        if (!Array.isArray(result[key])) {
+          result[key] = [result[key]];
+        }
+        result[key].push(value);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
+  // Check if it's multipart form data
+  if (contentType.includes('multipart/form-data')) {
+    // Extract boundary from content-type
+    const boundaryMatch = contentType.match(/boundary=([^;]+)/);
+    if (!boundaryMatch) {
+      return null;
+    }
+
+    const boundary = boundaryMatch[1];
+    const parts = raw.split(`--${boundary}`);
+    const result = {};
+
+    for (const part of parts) {
+      if (part.trim() === '' || part.trim() === '--') continue;
+
+      // Parse each part
+      const headerEnd = part.indexOf('\r\n\r\n');
+      if (headerEnd === -1) continue;
+
+      const headers = part.slice(0, headerEnd);
+      const content = part.slice(headerEnd + 4).replace(/\r\n$/, '');
+
+      // Extract field name from Content-Disposition
+      const nameMatch = headers.match(/name="([^"]+)"/);
+      if (nameMatch) {
+        const name = nameMatch[1];
+        const filenameMatch = headers.match(/filename="([^"]+)"/);
+
+        if (filenameMatch) {
+          // File attachment
+          const contentTypeMatch = headers.match(/Content-Type:\s*([^\r\n]+)/i);
+          result[name] = {
+            filename: filenameMatch[1],
+            'content-type': contentTypeMatch ? contentTypeMatch[1].trim() : 'application/octet-stream',
+            content: content
+          };
+        } else {
+          // Regular field
+          result[name] = content;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  // Try to parse as JSON as fallback
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
   }
 }
 
@@ -658,9 +934,16 @@ function bffLog(level, category, message, meta = {}) {
 async function handleRequest(req, res) {
   const startTime = Date.now();
 
+  // Track active connections for metrics
+  incrementConnections();
+  res.on('close', decrementConnections);
+
+  // Apply security headers to ALL responses (including errors)
+  applySecurityHeaders(res);
+  applyCorsHeaders(req, res);
+
   if (req.method === "OPTIONS") {
-    res.writeHead(204, corsHeaders);
-    res.end();
+    handleCorsPrelight(req, res);
     return;
   }
 
@@ -668,18 +951,30 @@ async function handleRequest(req, res) {
   const path = url.pathname;
 
   // Log all incoming requests (except health checks to reduce noise)
-  if (path !== "/health") {
+  if (path !== "/health" && path !== "/metrics") {
     bffLog('INFO', 'REQ', `${req.method} ${path}`);
   }
 
-  // Wrap response.end to log response status and timing
+  // Wrap response.end to log response status, timing, and record metrics
   const originalEnd = res.end.bind(res);
   res.end = function(...args) {
     const duration = Date.now() - startTime;
-    if (path !== "/health") {
+    if (path !== "/health" && path !== "/metrics") {
       const status = res.statusCode;
       const level = status >= 500 ? 'ERROR' : status >= 400 ? 'WARN' : 'INFO';
       bffLog(level, 'RES', `${req.method} ${path} → ${status} (${duration}ms)`);
+
+      // Record Prometheus metrics
+      recordHttpRequest(req.method, path, status, duration);
+
+      // Record errors to metrics
+      if (status >= 400) {
+        const errorType = status >= 500 ? 'INTERNAL_ERROR' : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'FORBIDDEN' : status === 404 ? 'NOT_FOUND' : 'VALIDATION_FAILED';
+        recordError(errorType, path);
+      }
+
+      // Structured logging for HTTP requests
+      logStructuredRequest(req, res, duration);
     }
     return originalEnd(...args);
   };
@@ -694,6 +989,20 @@ async function handleRequest(req, res) {
     return handleHealth(req, res);
   }
 
+  // Prometheus metrics endpoint
+  if (req.method === "GET" && path === "/metrics") {
+    try {
+      const metrics = await getMetrics();
+      res.writeHead(200, { "Content-Type": getMetricsContentType() });
+      res.end(metrics);
+      return;
+    } catch (error) {
+      serverLog.error("Failed to get metrics", { error: error.message });
+      sendError(res, 500, "Failed to get metrics");
+      return;
+    }
+  }
+
   // Debug routes (development only)
   if (req.method === "GET" && path === "/api/debug/status") {
     return handleDebugStatus(req, res);
@@ -703,6 +1012,15 @@ async function handleRequest(req, res) {
   }
   if (req.method === "POST" && path === "/api/debug/clear") {
     return handleDebugClear(req, res);
+  }
+  if (req.method === "POST" && path === "/api/debug/reset-rate-limit") {
+    return handleDebugResetRateLimit(req, res, readJsonBody);
+  }
+  if (req.method === "GET" && path === "/api/debug/circuits") {
+    return handleDebugCircuits(req, res);
+  }
+  if (req.method === "POST" && path === "/api/debug/circuits/reset") {
+    return handleDebugCircuitsReset(req, res);
   }
 
   // ========== AUTHENTICATION ==========
@@ -727,6 +1045,16 @@ async function handleRequest(req, res) {
     return handleListOrganizations(req, res);
   }
 
+  // ========== USER ROUTES (GP accessible) ==========
+
+  if (req.method === "GET" && path === "/api/users") {
+    return handleGetOrgUsers(req, res);
+  }
+
+  if (req.method === "GET" && path === "/api/users/recent") {
+    return handleGetRecentUsers(req, res);
+  }
+
   // ========== ADMIN ROUTES ==========
 
   if (req.method === "GET" && path === "/api/admin/verification-queue") {
@@ -745,6 +1073,14 @@ async function handleRequest(req, res) {
   const rejectVerificationMatch = path.match(/^\/api\/admin\/verification-requests\/([^/]+)\/reject$/);
   if (req.method === "POST" && rejectVerificationMatch) {
     return handleRejectVerification(req, res, rejectVerificationMatch[1], readJsonBody);
+  }
+
+  // Bulk verification endpoints
+  if (req.method === "POST" && path === "/api/admin/verification-requests/bulk-approve") {
+    return handleBulkApproveVerification(req, res, readJsonBody);
+  }
+  if (req.method === "POST" && path === "/api/admin/verification-requests/bulk-reject") {
+    return handleBulkRejectVerification(req, res, readJsonBody);
   }
 
   const updateUserRoleMatch = path.match(/^\/api\/admin\/users\/([^/]+)\/role$/);
@@ -767,7 +1103,7 @@ async function handleRequest(req, res) {
 
   if (req.method === "POST" && path === "/api/deals") {
     const authUser = await extractAuthUser(req);
-    return handleCreateDeal(req, res, KERNEL_BASE_URL, readJsonBody, getPrisma, resolveUserId, authUser);
+    return handleCreateDeal(req, res, KERNEL_BASE_URL, readJsonBody, getPrisma, authUser);
   }
 
   // Deal details
@@ -797,14 +1133,19 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && assignmentsListMatch) {
     const authUser = await requireGPWithDealAccess(req, res, assignmentsListMatch[1]);
     if (!authUser) return;
-    return handleAssignAnalyst(req, res, assignmentsListMatch[1], readJsonBody, resolveUserId, resolveActorRole);
+    return handleAssignAnalyst(req, res, assignmentsListMatch[1], readJsonBody, authUser);
   }
 
   const assignmentDeleteMatch = path.match(/^\/api\/deals\/([^/]+)\/assignments\/([^/]+)$/);
   if (req.method === "DELETE" && assignmentDeleteMatch) {
     const authUser = await requireGPWithDealAccess(req, res, assignmentDeleteMatch[1]);
     if (!authUser) return;
-    return handleUnassignAnalyst(req, res, assignmentDeleteMatch[1], assignmentDeleteMatch[2], resolveActorRole);
+    return handleUnassignAnalyst(req, res, assignmentDeleteMatch[1], assignmentDeleteMatch[2]);
+  }
+
+  // Bulk deal assignment endpoint
+  if (req.method === "POST" && path === "/api/deals/bulk/assign") {
+    return handleBulkAssignAnalyst(req, res, readJsonBody);
   }
 
   // Review Requests (Analyst → GP approval workflow)
@@ -817,7 +1158,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && reviewRequestsListMatch) {
     const authUser = await requireDealAccess(req, res, reviewRequestsListMatch[1]);
     if (!authUser) return;
-    return handleCreateReviewRequest(req, res, reviewRequestsListMatch[1], readJsonBody, resolveUserId);
+    return handleCreateReviewRequest(req, res, reviewRequestsListMatch[1], readJsonBody, authUser);
   }
 
   const pendingReviewMatch = path.match(/^\/api\/deals\/([^/]+)\/review-requests\/pending$/);
@@ -831,14 +1172,14 @@ async function handleRequest(req, res) {
   if (req.method === "GET" && path === "/api/review-requests") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleListReviewRequests(req, res, resolveUserId);
+    return handleListReviewRequests(req, res);
   }
 
   const reviewRequestRespondMatch = path.match(/^\/api\/review-requests\/([^/]+)\/respond$/);
   if (req.method === "POST" && reviewRequestRespondMatch) {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleRespondToReview(req, res, reviewRequestRespondMatch[1], readJsonBody, resolveUserId);
+    return handleRespondToReview(req, res, reviewRequestRespondMatch[1], readJsonBody, authUser);
   }
 
   // SECURITY: V4 fix - pass authUser for org isolation check in handler
@@ -852,10 +1193,11 @@ async function handleRequest(req, res) {
   // ========== MAGIC LINKS & LENDER PORTAL ==========
 
   // Create magic link (GP only)
+  // T1.2/T1.3: Pass authUser instead of resolveUserId for proper identity validation
   if (req.method === "POST" && path === "/api/magic-links") {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleCreateMagicLink(req, res, readJsonBody, resolveUserId);
+    return handleCreateMagicLink(req, res, readJsonBody, authUser);
   }
 
   // Validate magic link (no auth - the link itself is the auth)
@@ -865,19 +1207,21 @@ async function handleRequest(req, res) {
   }
 
   // Revoke magic link (GP only)
+  // T1.2/T1.3: Pass authUser instead of resolveUserId for proper identity validation
   const revokeMagicLinkMatch = path.match(/^\/api\/magic-links\/([^/]+)\/revoke$/);
   if (req.method === "POST" && revokeMagicLinkMatch) {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleRevokeMagicLink(req, res, revokeMagicLinkMatch[1], resolveUserId);
+    return handleRevokeMagicLink(req, res, revokeMagicLinkMatch[1], authUser);
   }
 
   // List magic links for a deal
+  // T1.2/T1.3: Pass authUser for org isolation checks
   const dealMagicLinksMatch = path.match(/^\/api\/deals\/([^/]+)\/magic-links$/);
   if (req.method === "GET" && dealMagicLinksMatch) {
     const authUser = await requireDealAccess(req, res, dealMagicLinksMatch[1]);
     if (!authUser) return;
-    return handleListDealMagicLinks(req, res, dealMagicLinksMatch[1]);
+    return handleListDealMagicLinks(req, res, dealMagicLinksMatch[1], authUser);
   }
 
   // Lender Portal (accessed via magic link token)
@@ -920,7 +1264,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && submitDealMatch) {
     const authUser = await requireGPWithDealAccess(req, res, submitDealMatch[1]);
     if (!authUser) return;
-    return handleSubmitDeal(req, res, submitDealMatch[1], readJsonBody, resolveUserId);
+    return handleSubmitDeal(req, res, submitDealMatch[1], readJsonBody, authUser);
   }
 
   // List submissions for a deal
@@ -944,7 +1288,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && resendSubmissionMatch) {
     const result = await requireGPWithSubmissionAccess(req, res, resendSubmissionMatch[1]);
     if (!result) return;
-    return handleResendSubmission(req, res, resendSubmissionMatch[1], resolveUserId);
+    return handleResendSubmission(req, res, resendSubmissionMatch[1], authUser);
   }
 
   // Cancel submission (GP only + org isolation via submission→deal)
@@ -952,7 +1296,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && cancelSubmissionMatch) {
     const result = await requireGPWithSubmissionAccess(req, res, cancelSubmissionMatch[1]);
     if (!result) return;
-    return handleCancelSubmission(req, res, cancelSubmissionMatch[1], resolveUserId);
+    return handleCancelSubmission(req, res, cancelSubmissionMatch[1]);
   }
 
   // ========== EMAIL-TO-DEAL INTEGRATION ==========
@@ -977,19 +1321,21 @@ async function handleRequest(req, res) {
   }
 
   // Get single email intake (GP only)
+  // T3.1 (P3 Security Sprint): Pass authUser for org isolation
   const emailIntakeMatch = path.match(/^\/api\/email-intake\/([^/]+)$/);
   if (req.method === "GET" && emailIntakeMatch) {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleGetEmailIntake(req, res, emailIntakeMatch[1]);
+    return handleGetEmailIntake(req, res, emailIntakeMatch[1], authUser);
   }
 
   // Retry failed email intake (GP only)
+  // T3.1 (P3 Security Sprint): Pass authUser for org isolation
   const emailIntakeRetryMatch = path.match(/^\/api\/email-intake\/([^/]+)\/retry$/);
   if (req.method === "POST" && emailIntakeRetryMatch) {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleRetryEmailIntake(req, res, emailIntakeRetryMatch[1]);
+    return handleRetryEmailIntake(req, res, emailIntakeRetryMatch[1], authUser);
   }
 
   // Events
@@ -1012,21 +1358,21 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && explainMatch) {
     const authUser = await requireDealAccess(req, res, explainMatch[1]);
     if (!authUser) return;
-    return handleExplain(req, res, explainMatch[1], KERNEL_BASE_URL, resolveUserId, resolveActorRole);
+    return handleExplain(req, res, explainMatch[1], KERNEL_BASE_URL);
   }
 
   const actionMatch = path.match(/^\/api\/deals\/([^/]+)\/actions\/([^/]+)$/);
   if (req.method === "POST" && actionMatch) {
     const authUser = await requireGPWithDealAccess(req, res, actionMatch[1]);
     if (!authUser) return;
-    return handleAction(req, res, actionMatch[1], actionMatch[2], KERNEL_BASE_URL, readJsonBody, resolveUserId, resolveActorRole, inFlight);
+    return handleAction(req, res, actionMatch[1], actionMatch[2], KERNEL_BASE_URL, readJsonBody, inFlight);
   }
 
   // LLM & Provenance
   if (req.method === "POST" && path === "/api/llm/parse-deal") {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleDealParse(req, res, readJsonBody, resolveUserId);
+    return handleDealParse(req, res, readJsonBody, authUser);
   }
 
   if (req.method === "POST" && path === "/api/llm/parse-deal/force-accept") {
@@ -1039,7 +1385,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && correctionsMatch) {
     const authUser = await requireDealAccess(req, res, correctionsMatch[1]);
     if (!authUser) return;
-    return handleCorrections(req, res, correctionsMatch[1], readJsonBody, resolveUserId, getPrisma);
+    return handleCorrections(req, res, correctionsMatch[1], readJsonBody, authUser, getPrisma);
   }
 
   const dataTrustMatch = path.match(/^\/api\/deals\/([^/]+)\/data-trust$/);
@@ -1053,7 +1399,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && provenanceMatch) {
     const authUser = await requireDealAccess(req, res, provenanceMatch[1]);
     if (!authUser) return;
-    return handleProvenanceUpdate(req, res, provenanceMatch[1], readJsonBody, KERNEL_BASE_URL, resolveUserId);
+    return handleProvenanceUpdate(req, res, provenanceMatch[1], readJsonBody, KERNEL_BASE_URL);
   }
 
   // Smart Parse (auto-extract fields from uploaded documents)
@@ -1068,7 +1414,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && smartParseApplyMatch) {
     const authUser = await requireGPWithDealAccess(req, res, smartParseApplyMatch[1]);
     if (!authUser) return;
-    return handleSmartParseApply(req, res, smartParseApplyMatch[1], readJsonBody, resolveUserId);
+    return handleSmartParseApply(req, res, smartParseApplyMatch[1], readJsonBody, authUser);
   }
 
   // ========== UNDERWRITING INTELLIGENCE (Phase 5) ==========
@@ -1417,20 +1763,22 @@ async function handleRequest(req, res) {
 
   // Update mappings for an import (requires GP)
   // SECURITY: V1 fix - pass authUser for org isolation check in handler
+  // T3.2 (P3 Security Sprint): Pass readJsonBody for Zod validation
   const excelMappingsMatch = path.match(/^\/api\/excel-imports\/([^/]+)\/mappings$/);
   if (req.method === "PATCH" && excelMappingsMatch) {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleUpdateMappings(req, res, excelMappingsMatch[1], authUser);
+    return handleUpdateMappings(req, res, excelMappingsMatch[1], authUser, readJsonBody);
   }
 
   // Apply Excel import to underwriting model (requires GP)
   // SECURITY: V1 fix - pass authUser for org isolation check in handler
+  // T3.2 (P3 Security Sprint): Pass readJsonBody for Zod validation
   const excelApplyMatch = path.match(/^\/api\/excel-imports\/([^/]+)\/apply$/);
   if (req.method === "POST" && excelApplyMatch) {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleApplyExcelImport(req, res, excelApplyMatch[1], authUser);
+    return handleApplyExcelImport(req, res, excelApplyMatch[1], authUser, readJsonBody);
   }
 
   // Get data for a specific sheet (requires auth)
@@ -1485,7 +1833,7 @@ async function handleRequest(req, res) {
   if (req.method === "GET" && path === "/api/inbox") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleInbox(req, res, KERNEL_BASE_URL, resolveUserId);
+    return handleInbox(req, res, KERNEL_BASE_URL, authUser);
   }
 
   // Home page data
@@ -1515,7 +1863,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && newsDismissMatch) {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleNewsDismiss(req, res, newsDismissMatch[1], resolveUserId);
+    return handleNewsDismiss(req, res, newsDismissMatch[1], authUser);
   }
 
   // Draft mode proxies
@@ -1607,13 +1955,13 @@ async function handleRequest(req, res) {
         if (result.ok && result.data) {
           invalidateDealCaches(dealId);
 
-          // Check for DD checklist and trigger auto-processing
-          const deal = await prisma.deal.findUnique({
-            where: { id: dealId },
-            select: { ddChecklist: { select: { id: true } } }
+          // Check for DD checklist and trigger auto-processing (query DDChecklist directly since Deal model lives in Kernel)
+          const ddChecklist = await prisma.dDChecklist.findUnique({
+            where: { dealId },
+            select: { id: true }
           });
 
-          if (deal?.ddChecklist && result.data.id) {
+          if (ddChecklist && result.data.id) {
             console.log(`[DD-AUTO] Triggering auto-process for artifact ${result.data.id} in deal ${dealId}`);
             // Run asynchronously - don't block the response
             setImmediate(async () => {
@@ -1674,7 +2022,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && path === "/api/lp/invitations") {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleSendInvitation(req, res, readJsonBody, KERNEL_BASE_URL, resolveUserId);
+    return handleSendInvitation(req, res, readJsonBody, KERNEL_BASE_URL, authUser);
   }
 
   // Accept invitation - no auth required (the invitation token is the auth)
@@ -1721,6 +2069,14 @@ async function handleRequest(req, res) {
     return handleLPPortalExport(req, res, dealId, KERNEL_BASE_URL, lpContext.lpEmail);
   }
 
+  // GET /api/lp/actors - List ALL LP actors across all deals (for Investors page)
+  if (req.method === "GET" && path === "/api/lp/actors") {
+    const authUser = await requireGP(req, res);
+    if (!authUser) return;
+    return handleListAllLPActors(req, res, authUser);
+  }
+
+  // GET /api/lp/actors/:dealId - List LP actors for a specific deal
   const lpActorsMatch = path.match(/^\/api\/lp\/actors\/([^/]+)$/);
   if (req.method === "GET" && lpActorsMatch) {
     const authUser = await requireDealAccess(req, res, lpActorsMatch[1]);
@@ -1732,21 +2088,35 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && path === "/api/lp/bulk-import") {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleBulkLPImport(req, res, readJsonBody, KERNEL_BASE_URL, resolveUserId);
+    return handleBulkLPImport(req, res, readJsonBody, KERNEL_BASE_URL, authUser);
   }
 
   // Custom Reports (GP only)
   if (req.method === "POST" && path === "/api/lp/reports/generate") {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleGenerateCustomReport(req, res, readJsonBody, KERNEL_BASE_URL, resolveUserId);
+    return handleGenerateCustomReport(req, res, readJsonBody, KERNEL_BASE_URL, authUser);
+  }
+
+  // Capital Calls Summary (for Investors page - aggregate across all deals)
+  if (req.method === "GET" && path === "/api/capital-calls/summary") {
+    const authUser = await requireGP(req, res);
+    if (!authUser) return;
+    return handleCapitalCallsSummary(req, res, authUser);
+  }
+
+  // Distributions Summary (for Investors page - aggregate across all deals)
+  if (req.method === "GET" && path === "/api/distributions/summary") {
+    const authUser = await requireGP(req, res);
+    if (!authUser) return;
+    return handleDistributionsSummary(req, res, authUser);
   }
 
   // LP Document Management Routes (GP only for uploads/management)
   if (req.method === "POST" && path === "/api/lp/documents") {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleLPUploadDocument(req, res, readJsonBody, resolveUserId, resolveUserName);
+    return handleLPUploadDocument(req, res, readJsonBody, authUser);
   }
 
   const lpDocumentsListMatch = path.match(/^\/api\/lp\/documents\/([^/]+)$/);
@@ -1790,10 +2160,11 @@ async function handleRequest(req, res) {
 
   // LP Portal Access Routes
   // Generate magic link for LP portal (GP only - creates link for LP)
+  // T1.2/T1.3: Pass authUser instead of resolveUserId for proper identity validation
   if (req.method === "POST" && path === "/api/lp/portal/magic-link") {
     const authUser = await requireGP(req, res);
     if (!authUser) return;
-    return handleLPGenerateMagicLink(req, res, readJsonBody, resolveUserId);
+    return handleLPGenerateMagicLink(req, res, readJsonBody, authUser);
   }
 
   // Validate LP session (token-based - handler validates)
@@ -2120,6 +2491,14 @@ async function handleRequest(req, res) {
     return handleCreateInvestorUpdate(req, res, investorUpdatesListMatch[1], readJsonBody, authUser.id, authUser.name);
   }
 
+  // Alias: /api/deals/:id/updates -> investor-updates (for UI compatibility)
+  const updatesAliasMatch = path.match(/^\/api\/deals\/([^/]+)\/updates$/);
+  if (req.method === "GET" && updatesAliasMatch) {
+    const authUser = await requireDealAccess(req, res, updatesAliasMatch[1]);
+    if (!authUser) return;
+    return handleListInvestorUpdates(req, res, updatesAliasMatch[1]);
+  }
+
   // GP: Get/update single investor update
   const investorUpdateDetailMatch = path.match(/^\/api\/deals\/([^/]+)\/investor-updates\/([^/]+)$/);
   if (req.method === "GET" && investorUpdateDetailMatch) {
@@ -2271,20 +2650,20 @@ async function handleRequest(req, res) {
   if (req.method === "GET" && path === "/api/notifications") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleListNotifications(req, res, resolveUserId);
+    return handleListNotifications(req, res, authUser);
   }
 
   const notificationReadMatch = path.match(/^\/api\/notifications\/([^/]+)\/read$/);
   if (req.method === "PATCH" && notificationReadMatch) {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleMarkNotificationRead(req, res, notificationReadMatch[1], resolveUserId);
+    return handleMarkNotificationRead(req, res, notificationReadMatch[1], authUser);
   }
 
   if (req.method === "PATCH" && path === "/api/notifications/read-all") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleMarkAllNotificationsRead(req, res, resolveUserId);
+    return handleMarkAllNotificationsRead(req, res, authUser);
   }
 
   // Notification snooze
@@ -2292,7 +2671,7 @@ async function handleRequest(req, res) {
   if (req.method === "PATCH" && notificationSnoozeMatch) {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleSnoozeNotification(req, res, notificationSnoozeMatch[1], resolveUserId, readJsonBody);
+    return handleSnoozeNotification(req, res, notificationSnoozeMatch[1], authUser, readJsonBody);
   }
 
   // Notification dismiss
@@ -2300,47 +2679,47 @@ async function handleRequest(req, res) {
   if (req.method === "PATCH" && notificationDismissMatch) {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleDismissNotification(req, res, notificationDismissMatch[1], resolveUserId, readJsonBody);
+    return handleDismissNotification(req, res, notificationDismissMatch[1], authUser, readJsonBody);
   }
 
   // Notification preferences
   if (req.method === "GET" && path === "/api/notification-preferences") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleGetNotificationPreferences(req, res, resolveUserId);
+    return handleGetNotificationPreferences(req, res, authUser);
   }
 
   if (req.method === "PATCH" && path === "/api/notification-preferences") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleUpdateNotificationPreferences(req, res, resolveUserId, readJsonBody);
+    return handleUpdateNotificationPreferences(req, res, authUser, readJsonBody);
   }
 
   // Activity Feed
   if (req.method === "GET" && path === "/api/activity-feed") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleGetActivityFeed(req, res, resolveUserId, resolveActorRole);
+    return handleGetActivityFeed(req, res, authUser);
   }
 
   // Chat Tasks
   if (req.method === "GET" && path === "/api/tasks") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleListTasks(req, res, resolveUserId);
+    return handleListTasks(req, res, authUser);
   }
 
   if (req.method === "POST" && path === "/api/tasks") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleCreateTask(req, res, resolveUserId, readJsonBody);
+    return handleCreateTask(req, res, authUser, readJsonBody);
   }
 
   const taskUpdateMatch = path.match(/^\/api\/tasks\/([^/]+)$/);
   if (req.method === "PATCH" && taskUpdateMatch) {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
-    return handleUpdateTask(req, res, taskUpdateMatch[1], resolveUserId, readJsonBody);
+    return handleUpdateTask(req, res, taskUpdateMatch[1], authUser, readJsonBody);
   }
 
   // AI Assistant
@@ -2349,14 +2728,14 @@ async function handleRequest(req, res) {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
     console.log(`[AI] /api/ai-assistant/ask - User: ${authUser.id}, Role: ${authUser.role}, Org: ${authUser.organizationId}`);
-    return handleAskAI(req, res, KERNEL_BASE_URL, resolveUserId, resolveActorRole, authUser);
+    return handleAskAI(req, res, KERNEL_BASE_URL, authUser);
   }
 
   if (req.method === "GET" && path === "/api/ai-assistant/suggestions") {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
     console.log(`[AI] /api/ai-assistant/suggestions - User: ${authUser.id}, Role: ${authUser.role}`);
-    return handleGetSuggestions(req, res, resolveUserId, resolveActorRole, authUser);
+    return handleGetSuggestions(req, res, authUser);
   }
 
   // ========== AI CONSENT MANAGEMENT (Phase 1.2) ==========
@@ -2408,7 +2787,7 @@ async function handleRequest(req, res) {
     const authUser = await requireDealAccess(req, res, dealChatMatch[1]);
     if (!authUser) return;
     console.log(`[AI] /api/deals/${dealChatMatch[1]}/chat - User: ${authUser.id}, Role: ${authUser.role}, Org: ${authUser.organizationId}`);
-    return handleDealChat(req, res, dealChatMatch[1], resolveUserId, resolveActorRole, authUser);
+    return handleDealChat(req, res, dealChatMatch[1], authUser);
   }
 
   // GET /api/deals/:dealId/chat/history - Chat history
@@ -2417,7 +2796,7 @@ async function handleRequest(req, res) {
     const authUser = await requireDealAccess(req, res, dealChatHistoryMatch[1]);
     if (!authUser) return;
     console.log(`[AI] /api/deals/${dealChatHistoryMatch[1]}/chat/history - User: ${authUser.id}, Role: ${authUser.role}`);
-    return handleGetDealChatHistory(req, res, dealChatHistoryMatch[1], resolveUserId, authUser);
+    return handleGetDealChatHistory(req, res, dealChatHistoryMatch[1], authUser);
   }
 
   // GET /api/deals/:dealId/insights - Auto-generated insights
@@ -2444,7 +2823,7 @@ async function handleRequest(req, res) {
     const authUser = await requireDealAccess(req, res, dealSummarizeMatch[1]);
     if (!authUser) return;
     console.log(`[AI] /api/deals/${dealSummarizeMatch[1]}/summarize - User: ${authUser.id}, Role: ${authUser.role}, Org: ${authUser.organizationId}`);
-    return handleDealSummarize(req, res, dealSummarizeMatch[1], resolveUserId, authUser);
+    return handleDealSummarize(req, res, dealSummarizeMatch[1], authUser);
   }
 
   // POST /api/deals/:dealId/export-package - One-click complete deal package export
@@ -2452,7 +2831,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && exportPackageMatch) {
     const authUser = await requireDealAccess(req, res, exportPackageMatch[1]);
     if (!authUser) return;
-    return handleExportPackage(req, res, exportPackageMatch[1], resolveUserId);
+    return handleExportPackage(req, res, exportPackageMatch[1], authUser);
   }
 
   // ========== PHASE 2 AI ROUTES ==========
@@ -2869,7 +3248,7 @@ async function handleRequest(req, res) {
   if (req.method === "POST" && transitionStateMatch) {
     const authUser = await requireGPWithDealAccess(req, res, transitionStateMatch[1]);
     if (!authUser) return;
-    return handleTransitionState(req, res, transitionStateMatch[1], readJsonBody, resolveUserId, resolveActorRole);
+    return handleTransitionState(req, res, transitionStateMatch[1], readJsonBody);
   }
 
   // Get available transitions
@@ -2877,7 +3256,15 @@ async function handleRequest(req, res) {
   if (req.method === "GET" && availableTransitionsMatch) {
     const authUser = await requireDealAccess(req, res, availableTransitionsMatch[1]);
     if (!authUser) return;
-    return handleGetAvailableTransitions(req, res, availableTransitionsMatch[1], resolveUserId, resolveActorRole);
+    return handleGetAvailableTransitions(req, res, availableTransitionsMatch[1]);
+  }
+
+  // Alias: /api/deals/:id/state/transitions -> available-transitions (for UI compatibility)
+  const transitionsAliasMatch = path.match(/^\/api\/deals\/([^/]+)\/state\/transitions$/);
+  if (req.method === "GET" && transitionsAliasMatch) {
+    const authUser = await requireDealAccess(req, res, transitionsAliasMatch[1]);
+    if (!authUser) return;
+    return handleGetAvailableTransitions(req, res, transitionsAliasMatch[1]);
   }
 
   // Get blockers
@@ -2976,13 +3363,40 @@ async function handleRequest(req, res) {
     return handleDownloadEvidencePack(req, res, downloadPackMatch[1], downloadPackMatch[2], authUser);
   }
 
+  // ========== BROKER DASHBOARD ==========
+  // Routes: /api/broker/* (unified dashboard for brokers)
+  if (path.startsWith("/api/broker/")) {
+    const authUser = await requireAuth(req, res);
+    if (!authUser) return;
+    const segments = path.split("/").filter(Boolean); // ['api', 'broker', ...]
+    return dispatchBrokerDashboardRoutes(req, res, segments.slice(1), readJsonBody, authUser);
+  }
+
+  // ========== BROKERAGE MANAGEMENT ==========
+  // Routes: /api/brokerages/*
+  if (path.startsWith("/api/brokerages")) {
+    const authUser = await requireAuth(req, res);
+    if (!authUser) return;
+    const segments = path.split("/").filter(Boolean); // ['api', 'brokerages', ...]
+    return dispatchBrokerageRoutes(req, res, segments, readJsonBody, authUser);
+  }
+
+  // ========== LISTING AGREEMENTS ==========
+  // Routes: /api/listing-agreements/*
+  if (path.startsWith("/api/listing-agreements")) {
+    const authUser = await requireAuth(req, res);
+    if (!authUser) return;
+    const segments = path.split("/").filter(Boolean); // ['api', 'listing-agreements', ...]
+    return dispatchListingAgreementRoutes(req, res, segments, readJsonBody, authUser);
+  }
+
   // ========== DEAL INTAKE & DISTRIBUTION (Pre-DD workflow) ==========
   // Routes: /api/intake/*
   if (path.startsWith("/api/intake/")) {
     const authUser = await requireAuth(req, res);
     if (!authUser) return;
     const segments = path.split("/").filter(Boolean); // ['api', 'intake', ...]
-    return dispatchIntakeRoutes(req, res, segments, readJsonBody, authUser);
+    return dispatchIntakeRoutes(req, res, segments, readJsonBody, authUser, KERNEL_BASE_URL);
   }
 
   // ========== OM MANAGEMENT (Offering Memorandum) ==========
@@ -3030,31 +3444,778 @@ async function handleRequest(req, res) {
     return dispatchPermissionGateRoutes(req, res, segments.slice(2), readJsonBody, authUser);
   }
 
+  // ========== CONTACTS (Vendor/Contact Database) ==========
+  // Routes: /api/contacts/*
+  if (path.startsWith("/api/contacts")) {
+    const authUser = await requireAuth(req, res);
+    if (!authUser) return;
+    const segments = path.split("/").filter(Boolean); // ['api', 'contacts', ...]
+    return dispatchContactRoutes(req, res, segments.slice(1), readJsonBody, authUser);
+  }
+
+  // ========== ONBOARDING EMAIL WEBHOOK (No Auth) ==========
+  // Route: POST /api/onboarding/email/webhook
+  // This is called by SendGrid Inbound Parse - no auth required
+  if (path === "/api/onboarding/email/webhook" && req.method === "POST") {
+    const { createOnboardingEmailForwarderService } = await import('./services/onboarding-email-forwarder.js');
+    const emailService = createOnboardingEmailForwarderService(getPrisma());
+
+    // Parse multipart form data
+    const formData = await parseMultipartFormData(req);
+    const result = await emailService.processInboundEmail(formData);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      received: true,
+      emailLogId: result.emailLogId,
+      error: result.error
+    }));
+    return;
+  }
+
+  // ========== ONBOARDING (Organization Data Import) ==========
+  // Routes: /api/onboarding/*
+  if (path.startsWith("/api/onboarding/")) {
+    const authUser = await requireAuth(req, res);
+    if (!authUser) return;
+    const segments = path.split("/").filter(Boolean); // ['api', 'onboarding', ...]
+    return dispatchOnboardingRoutes(req, res, segments.slice(1), readJsonBody, authUser);
+  }
+
+  // ========== ADMIN ONBOARDING (Ops Team Queue) ==========
+  // Routes: /api/admin/onboarding/*
+  if (path.startsWith("/api/admin/onboarding")) {
+    const authUser = await requireAuth(req, res);
+    if (!authUser) return;
+    const segments = path.split("/").filter(Boolean); // ['api', 'admin', 'onboarding', ...]
+    return dispatchOnboardingRoutes(req, res, segments.slice(1), readJsonBody, authUser);
+  }
+
+  // ========== LEGAL / GP COUNSEL ==========
+  // Routes: /api/legal/* - Legal matter management for GP Counsel
+  if (path.startsWith("/api/legal/")) {
+    // GET /api/legal/dashboard - Dashboard summary
+    if (req.method === "GET" && path === "/api/legal/dashboard") {
+      return handleGetLegalDashboard(req, res);
+    }
+
+    // GET /api/legal/stats - GC oversight stats
+    if (req.method === "GET" && path === "/api/legal/stats") {
+      return handleGetLegalStats(req, res);
+    }
+
+    // GET /api/legal/matters - List matters
+    if (req.method === "GET" && path === "/api/legal/matters") {
+      return handleListMatters(req, res);
+    }
+
+    // POST /api/legal/matters - Create matter
+    if (req.method === "POST" && path === "/api/legal/matters") {
+      req.body = await readJsonBody();
+      return handleCreateMatter(req, res);
+    }
+
+    // GET /api/legal/matters/:id - Get matter
+    const getMatterMatch = path.match(/^\/api\/legal\/matters\/([^/]+)$/);
+    if (req.method === "GET" && getMatterMatch) {
+      return handleGetMatter(req, res, getMatterMatch[1]);
+    }
+
+    // PATCH /api/legal/matters/:id - Update matter
+    const updateMatterMatch = path.match(/^\/api\/legal\/matters\/([^/]+)$/);
+    if (req.method === "PATCH" && updateMatterMatch) {
+      req.body = await readJsonBody();
+      return handleUpdateMatter(req, res, updateMatterMatch[1]);
+    }
+
+    // POST /api/legal/matters/:id/stage - Change stage (Kanban move)
+    const stageMatch = path.match(/^\/api\/legal\/matters\/([^/]+)\/stage$/);
+    if (req.method === "POST" && stageMatch) {
+      req.body = await readJsonBody();
+      return handleChangeMatterStage(req, res, stageMatch[1]);
+    }
+
+    // POST /api/legal/matters/:id/assign - Assign matter
+    const assignMatch = path.match(/^\/api\/legal\/matters\/([^/]+)\/assign$/);
+    if (req.method === "POST" && assignMatch) {
+      req.body = await readJsonBody();
+      return handleAssignMatter(req, res, assignMatch[1]);
+    }
+
+    // POST /api/legal/matters/:id/sign-off - Sign off on matter
+    const signOffMatch = path.match(/^\/api\/legal\/matters\/([^/]+)\/sign-off$/);
+    if (req.method === "POST" && signOffMatch) {
+      req.body = await readJsonBody();
+      return handleSignOff(req, res, signOffMatch[1]);
+    }
+
+    // GET /api/legal/matters/:id/activities - Get activities
+    const getActivitiesMatch = path.match(/^\/api\/legal\/matters\/([^/]+)\/activities$/);
+    if (req.method === "GET" && getActivitiesMatch) {
+      return handleGetActivities(req, res, getActivitiesMatch[1]);
+    }
+
+    // POST /api/legal/matters/:id/activities - Add activity
+    const addActivityMatch = path.match(/^\/api\/legal\/matters\/([^/]+)\/activities$/);
+    if (req.method === "POST" && addActivityMatch) {
+      req.body = await readJsonBody();
+      return handleAddActivity(req, res, addActivityMatch[1]);
+    }
+
+    // GET /api/legal/deals/:dealId/legal-context - Deal legal context
+    const dealContextMatch = path.match(/^\/api\/legal\/deals\/([^/]+)\/legal-context$/);
+    if (req.method === "GET" && dealContextMatch) {
+      return handleGetDealLegalContext(req, res, dealContextMatch[1]);
+    }
+
+    // ========== PHASE 2: DOCUMENT ANALYSIS ==========
+
+    // GET /api/legal/matters/:matterId/documents - List matter documents
+    const listDocsMatch = path.match(/^\/api\/legal\/matters\/([^/]+)\/documents$/);
+    if (req.method === "GET" && listDocsMatch) {
+      return handleListMatterDocuments(req, res, listDocsMatch[1]);
+    }
+
+    // POST /api/legal/matters/:matterId/documents - Upload document to matter
+    const uploadDocMatch = path.match(/^\/api\/legal\/matters\/([^/]+)\/documents$/);
+    if (req.method === "POST" && uploadDocMatch) {
+      req.body = await readJsonBody();
+      return handleUploadDocument(req, res, uploadDocMatch[1]);
+    }
+
+    // GET /api/legal/documents/:id - Get document
+    const getDocMatch = path.match(/^\/api\/legal\/documents\/([^/]+)$/);
+    if (req.method === "GET" && getDocMatch) {
+      return handleGetDocument(req, res, getDocMatch[1]);
+    }
+
+    // DELETE /api/legal/documents/:id - Delete document
+    const deleteDocMatch = path.match(/^\/api\/legal\/documents\/([^/]+)$/);
+    if (req.method === "DELETE" && deleteDocMatch) {
+      return handleDeleteDocument(req, res, deleteDocMatch[1]);
+    }
+
+    // POST /api/legal/documents/:id/analyze - Trigger AI analysis
+    const analyzeDocMatch = path.match(/^\/api\/legal\/documents\/([^/]+)\/analyze$/);
+    if (req.method === "POST" && analyzeDocMatch) {
+      req.body = await readJsonBody();
+      return handleAnalyzeDocument(req, res, analyzeDocMatch[1]);
+    }
+
+    // GET /api/legal/documents/:id/analysis - Get analysis results
+    const getAnalysisMatch = path.match(/^\/api\/legal\/documents\/([^/]+)\/analysis$/);
+    if (req.method === "GET" && getAnalysisMatch) {
+      return handleGetAnalysis(req, res, getAnalysisMatch[1]);
+    }
+
+    // POST /api/legal/documents/:id/analyze/playbook - Analyze against playbook
+    const playbookAnalyzeMatch = path.match(/^\/api\/legal\/documents\/([^/]+)\/analyze\/playbook$/);
+    if (req.method === "POST" && playbookAnalyzeMatch) {
+      req.body = await readJsonBody();
+      return handleAnalyzeWithPlaybook(req, res, playbookAnalyzeMatch[1]);
+    }
+
+    // ========== PHASE 2: PLAYBOOKS ==========
+
+    // GET /api/legal/playbooks - List playbooks
+    if (req.method === "GET" && path === "/api/legal/playbooks") {
+      return handleListPlaybooks(req, res);
+    }
+
+    // POST /api/legal/playbooks - Create playbook
+    if (req.method === "POST" && path === "/api/legal/playbooks") {
+      req.body = await readJsonBody();
+      return handleCreatePlaybook(req, res);
+    }
+
+    // GET /api/legal/playbooks/suggestions - Get rule suggestions
+    if (req.method === "GET" && path === "/api/legal/playbooks/suggestions") {
+      return handleGetPlaybookSuggestions(req, res);
+    }
+
+    // GET /api/legal/playbooks/:id - Get playbook
+    const getPlaybookMatch = path.match(/^\/api\/legal\/playbooks\/([^/]+)$/);
+    if (req.method === "GET" && getPlaybookMatch && getPlaybookMatch[1] !== "suggestions") {
+      return handleGetPlaybook(req, res, getPlaybookMatch[1]);
+    }
+
+    // PATCH /api/legal/playbooks/:id - Update playbook
+    const updatePlaybookMatch = path.match(/^\/api\/legal\/playbooks\/([^/]+)$/);
+    if (req.method === "PATCH" && updatePlaybookMatch) {
+      req.body = await readJsonBody();
+      return handleUpdatePlaybook(req, res, updatePlaybookMatch[1]);
+    }
+
+    // DELETE /api/legal/playbooks/:id - Delete playbook
+    const deletePlaybookMatch = path.match(/^\/api\/legal\/playbooks\/([^/]+)$/);
+    if (req.method === "DELETE" && deletePlaybookMatch) {
+      return handleDeletePlaybook(req, res, deletePlaybookMatch[1]);
+    }
+
+    // POST /api/legal/playbooks/:id/rules - Add rule
+    const addRuleMatch = path.match(/^\/api\/legal\/playbooks\/([^/]+)\/rules$/);
+    if (req.method === "POST" && addRuleMatch) {
+      req.body = await readJsonBody();
+      return handleAddRule(req, res, addRuleMatch[1]);
+    }
+
+    // PATCH /api/legal/playbooks/:id/rules/:ruleId - Update rule
+    const updateRuleMatch = path.match(/^\/api\/legal\/playbooks\/([^/]+)\/rules\/([^/]+)$/);
+    if (req.method === "PATCH" && updateRuleMatch) {
+      req.body = await readJsonBody();
+      return handleUpdateRule(req, res, updateRuleMatch[1], updateRuleMatch[2]);
+    }
+
+    // DELETE /api/legal/playbooks/:id/rules/:ruleId - Delete rule
+    const deleteRuleMatch = path.match(/^\/api\/legal\/playbooks\/([^/]+)\/rules\/([^/]+)$/);
+    if (req.method === "DELETE" && deleteRuleMatch) {
+      return handleDeleteRule(req, res, deleteRuleMatch[1], deleteRuleMatch[2]);
+    }
+
+    // POST /api/legal/playbooks/:id/test - Test playbook against document
+    const testPlaybookMatch = path.match(/^\/api\/legal\/playbooks\/([^/]+)\/test$/);
+    if (req.method === "POST" && testPlaybookMatch) {
+      req.body = await readJsonBody();
+      return handleTestPlaybook(req, res, testPlaybookMatch[1]);
+    }
+
+    // ========== PHASE 2: VAULT ==========
+
+    // GET /api/legal/vaults - List vaults
+    if (req.method === "GET" && path === "/api/legal/vaults") {
+      return handleListVaults(req, res);
+    }
+
+    // POST /api/legal/vaults - Create vault
+    if (req.method === "POST" && path === "/api/legal/vaults") {
+      req.body = await readJsonBody();
+      return handleCreateVault(req, res);
+    }
+
+    // GET /api/legal/vaults/:id - Get vault
+    const getVaultMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)$/);
+    if (req.method === "GET" && getVaultMatch) {
+      return handleGetVault(req, res, getVaultMatch[1]);
+    }
+
+    // PATCH /api/legal/vaults/:id - Update vault
+    const updateVaultMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)$/);
+    if (req.method === "PATCH" && updateVaultMatch) {
+      req.body = await readJsonBody();
+      return handleUpdateVault(req, res, updateVaultMatch[1]);
+    }
+
+    // DELETE /api/legal/vaults/:id - Delete vault
+    const deleteVaultMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)$/);
+    if (req.method === "DELETE" && deleteVaultMatch) {
+      return handleDeleteVault(req, res, deleteVaultMatch[1]);
+    }
+
+    // GET /api/legal/vaults/:id/documents - List vault documents
+    const listVaultDocsMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)\/documents$/);
+    if (req.method === "GET" && listVaultDocsMatch) {
+      return handleListVaultDocuments(req, res, listVaultDocsMatch[1]);
+    }
+
+    // POST /api/legal/vaults/:id/documents - Add documents to vault
+    const addVaultDocsMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)\/documents$/);
+    if (req.method === "POST" && addVaultDocsMatch) {
+      req.body = await readJsonBody();
+      return handleAddVaultDocuments(req, res, addVaultDocsMatch[1]);
+    }
+
+    // DELETE /api/legal/vaults/:id/documents/:docId - Remove document from vault
+    const removeVaultDocMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)\/documents\/([^/]+)$/);
+    if (req.method === "DELETE" && removeVaultDocMatch) {
+      return handleRemoveVaultDocument(req, res, removeVaultDocMatch[1], removeVaultDocMatch[2]);
+    }
+
+    // POST /api/legal/vaults/:id/query - Query across vault documents
+    const queryVaultMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)\/query$/);
+    if (req.method === "POST" && queryVaultMatch) {
+      req.body = await readJsonBody();
+      return handleVaultQuery(req, res, queryVaultMatch[1]);
+    }
+
+    // GET /api/legal/vaults/:id/queries - Get query history
+    const listQueriesMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)\/queries$/);
+    if (req.method === "GET" && listQueriesMatch) {
+      return handleListQueries(req, res, listQueriesMatch[1]);
+    }
+
+    // POST /api/legal/vaults/:id/compare - Compare documents
+    const compareDocsMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)\/compare$/);
+    if (req.method === "POST" && compareDocsMatch) {
+      req.body = await readJsonBody();
+      return handleCompareDocuments(req, res, compareDocsMatch[1]);
+    }
+
+    // POST /api/legal/vaults/:id/reports/generate - Generate aggregate report
+    const generateReportMatch = path.match(/^\/api\/legal\/vaults\/([^/]+)\/reports\/generate$/);
+    if (req.method === "POST" && generateReportMatch) {
+      req.body = await readJsonBody();
+      return handleGenerateReport(req, res, generateReportMatch[1]);
+    }
+
+    // ========== PHASE 3: SHARED SPACES ==========
+
+    // GET /api/legal/spaces - List shared spaces
+    if (req.method === "GET" && path === "/api/legal/spaces") {
+      return handleListSpaces(req, res);
+    }
+
+    // POST /api/legal/spaces - Create shared space
+    if (req.method === "POST" && path === "/api/legal/spaces") {
+      req.body = await readJsonBody();
+      return handleCreateSpace(req, res);
+    }
+
+    // GET /api/legal/spaces/:id - Get space detail
+    const getSpaceMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)$/);
+    if (req.method === "GET" && getSpaceMatch) {
+      return handleGetSpace(req, res, getSpaceMatch[1]);
+    }
+
+    // PATCH /api/legal/spaces/:id - Update space
+    const updateSpaceMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)$/);
+    if (req.method === "PATCH" && updateSpaceMatch) {
+      req.body = await readJsonBody();
+      return handleUpdateSpace(req, res, updateSpaceMatch[1]);
+    }
+
+    // DELETE /api/legal/spaces/:id - Delete space
+    const deleteSpaceMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)$/);
+    if (req.method === "DELETE" && deleteSpaceMatch) {
+      return handleDeleteSpace(req, res, deleteSpaceMatch[1]);
+    }
+
+    // POST /api/legal/spaces/:id/members - Add member
+    const addMemberMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)\/members$/);
+    if (req.method === "POST" && addMemberMatch) {
+      req.body = await readJsonBody();
+      return handleAddMember(req, res, addMemberMatch[1]);
+    }
+
+    // DELETE /api/legal/spaces/:id/members/:memberId - Remove member
+    const removeMemberMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)\/members\/([^/]+)$/);
+    if (req.method === "DELETE" && removeMemberMatch) {
+      return handleRemoveMember(req, res, removeMemberMatch[1], removeMemberMatch[2]);
+    }
+
+    // PATCH /api/legal/spaces/:id/members/:memberId - Update member role
+    const updateMemberMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)\/members\/([^/]+)$/);
+    if (req.method === "PATCH" && updateMemberMatch) {
+      req.body = await readJsonBody();
+      return handleUpdateMemberRole(req, res, updateMemberMatch[1], updateMemberMatch[2]);
+    }
+
+    // POST /api/legal/spaces/:id/documents - Add document
+    const addSpaceDocMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)\/documents$/);
+    if (req.method === "POST" && addSpaceDocMatch) {
+      req.body = await readJsonBody();
+      return handleAddDocument(req, res, addSpaceDocMatch[1]);
+    }
+
+    // DELETE /api/legal/spaces/:id/documents/:docId - Remove document
+    const removeSpaceDocMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)\/documents\/([^/]+)$/);
+    if (req.method === "DELETE" && removeSpaceDocMatch) {
+      return handleRemoveDocument(req, res, removeSpaceDocMatch[1], removeSpaceDocMatch[2]);
+    }
+
+    // GET /api/legal/spaces/:id/messages - Get messages
+    const getMessagesMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)\/messages$/);
+    if (req.method === "GET" && getMessagesMatch) {
+      return handleGetMessages(req, res, getMessagesMatch[1]);
+    }
+
+    // POST /api/legal/spaces/:id/messages - Send message
+    const sendMessageMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)\/messages$/);
+    if (req.method === "POST" && sendMessageMatch) {
+      req.body = await readJsonBody();
+      req.params = { id: sendMessageMatch[1] };
+      return handleSendSpaceMessage(req, res);
+    }
+
+    // GET /api/legal/spaces/:id/activity - Get activity log
+    const getActivityMatch = path.match(/^\/api\/legal\/spaces\/([^/]+)\/activity$/);
+    if (req.method === "GET" && getActivityMatch) {
+      return handleGetActivity(req, res, getActivityMatch[1]);
+    }
+
+    // ========== PHASE 3: EXTERNAL ACCESS (PUBLIC) ==========
+
+    // GET /api/legal/external/:token - Validate token and get space
+    const validateTokenMatch = path.match(/^\/api\/legal\/external\/([^/]+)$/);
+    if (req.method === "GET" && validateTokenMatch) {
+      return handleValidateToken(req, res, validateTokenMatch[1]);
+    }
+
+    // GET /api/legal/external/:token/documents - Get documents (external)
+    const getExternalDocsMatch = path.match(/^\/api\/legal\/external\/([^/]+)\/documents$/);
+    if (req.method === "GET" && getExternalDocsMatch) {
+      return handleGetExternalDocuments(req, res, getExternalDocsMatch[1]);
+    }
+
+    // POST /api/legal/external/:token/documents - Upload document (external)
+    const uploadExternalDocMatch = path.match(/^\/api\/legal\/external\/([^/]+)\/documents$/);
+    if (req.method === "POST" && uploadExternalDocMatch) {
+      req.body = await readJsonBody();
+      return handleUploadExternalDocument(req, res, uploadExternalDocMatch[1]);
+    }
+
+    // GET /api/legal/external/:token/documents/:docId - Download document (external)
+    const downloadExternalDocMatch = path.match(/^\/api\/legal\/external\/([^/]+)\/documents\/([^/]+)$/);
+    if (req.method === "GET" && downloadExternalDocMatch) {
+      return handleDownloadExternalDocument(req, res, downloadExternalDocMatch[1], downloadExternalDocMatch[2]);
+    }
+
+    // GET /api/legal/external/:token/messages - Get messages (external)
+    const getExternalMsgsMatch = path.match(/^\/api\/legal\/external\/([^/]+)\/messages$/);
+    if (req.method === "GET" && getExternalMsgsMatch) {
+      return handleGetExternalMessages(req, res, getExternalMsgsMatch[1]);
+    }
+
+    // POST /api/legal/external/:token/messages - Send message (external)
+    const sendExternalMsgMatch = path.match(/^\/api\/legal\/external\/([^/]+)\/messages$/);
+    if (req.method === "POST" && sendExternalMsgMatch) {
+      req.body = await readJsonBody();
+      return handleSendExternalMessage(req, res, sendExternalMsgMatch[1]);
+    }
+
+    // ========== PHASE 4: VENDOR CRM ==========
+
+    // GET /api/legal/vendors - List vendors
+    if (req.method === "GET" && path === "/api/legal/vendors") {
+      return handleListVendors(req, res);
+    }
+
+    // POST /api/legal/vendors - Create vendor
+    if (req.method === "POST" && path === "/api/legal/vendors") {
+      req.body = await readJsonBody();
+      return handleCreateVendor(req, res);
+    }
+
+    // GET /api/legal/vendors/compare - Compare vendors (must come before /:id route)
+    if (req.method === "GET" && path === "/api/legal/vendors/compare") {
+      return handleCompareVendors(req, res);
+    }
+
+    // GET /api/legal/vendors/:id - Get vendor
+    const getVendorMatch = path.match(/^\/api\/legal\/vendors\/([^/]+)$/);
+    if (req.method === "GET" && getVendorMatch) {
+      req.params = { id: getVendorMatch[1] };
+      return handleGetVendor(req, res);
+    }
+
+    // PATCH /api/legal/vendors/:id - Update vendor
+    const updateVendorMatch = path.match(/^\/api\/legal\/vendors\/([^/]+)$/);
+    if (req.method === "PATCH" && updateVendorMatch) {
+      req.body = await readJsonBody();
+      req.params = { id: updateVendorMatch[1] };
+      return handleUpdateVendor(req, res);
+    }
+
+    // POST /api/legal/vendors/:id/contacts - Add contact
+    const addContactMatch = path.match(/^\/api\/legal\/vendors\/([^/]+)\/contacts$/);
+    if (req.method === "POST" && addContactMatch) {
+      req.body = await readJsonBody();
+      req.params = { id: addContactMatch[1] };
+      return handleAddContact(req, res);
+    }
+
+    // POST /api/legal/vendors/:id/engagements - Create engagement
+    const createEngagementMatch = path.match(/^\/api\/legal\/vendors\/([^/]+)\/engagements$/);
+    if (req.method === "POST" && createEngagementMatch) {
+      req.body = await readJsonBody();
+      req.params = { id: createEngagementMatch[1] };
+      return handleCreateEngagement(req, res);
+    }
+
+    // POST /api/legal/vendors/:id/reviews - Add review
+    const addReviewMatch = path.match(/^\/api\/legal\/vendors\/([^/]+)\/reviews$/);
+    if (req.method === "POST" && addReviewMatch) {
+      req.body = await readJsonBody();
+      req.params = { id: addReviewMatch[1] };
+      return handleAddReview(req, res);
+    }
+
+    // ========== PHASE 4: ENTITY MANAGEMENT ==========
+
+    // GET /api/legal/entities/filing-reminders - Filing reminders (must come before /:id route)
+    if (req.method === "GET" && path === "/api/legal/entities/filing-reminders") {
+      return handleFilingReminders(req, res);
+    }
+
+    // GET /api/legal/entities - List entities
+    if (req.method === "GET" && path === "/api/legal/entities") {
+      return handleListEntities(req, res);
+    }
+
+    // POST /api/legal/entities - Create entity
+    if (req.method === "POST" && path === "/api/legal/entities") {
+      req.body = await readJsonBody();
+      return handleCreateEntity(req, res);
+    }
+
+    // GET /api/legal/entities/:id - Get entity
+    const getEntityMatch = path.match(/^\/api\/legal\/entities\/([^/]+)$/);
+    if (req.method === "GET" && getEntityMatch) {
+      req.params = { id: getEntityMatch[1] };
+      return handleGetEntity(req, res);
+    }
+
+    // PATCH /api/legal/entities/:id - Update entity
+    const updateEntityMatch = path.match(/^\/api\/legal\/entities\/([^/]+)$/);
+    if (req.method === "PATCH" && updateEntityMatch) {
+      req.body = await readJsonBody();
+      req.params = { id: updateEntityMatch[1] };
+      return handleUpdateEntity(req, res);
+    }
+
+    // GET /api/legal/entities/:id/org-chart - Get org chart
+    const getOrgChartMatch = path.match(/^\/api\/legal\/entities\/([^/]+)\/org-chart$/);
+    if (req.method === "GET" && getOrgChartMatch) {
+      req.params = { id: getOrgChartMatch[1] };
+      return handleGetOrgChart(req, res);
+    }
+
+    // POST /api/legal/entities/:id/documents - Add document
+    const addEntityDocMatch = path.match(/^\/api\/legal\/entities\/([^/]+)\/documents$/);
+    if (req.method === "POST" && addEntityDocMatch) {
+      req.body = await readJsonBody();
+      req.params = { id: addEntityDocMatch[1] };
+      return handleAddEntityDocument(req, res);
+    }
+
+    // GET /api/legal/entities/:id/related-deals - Get related deals
+    const relatedDealsMatch = path.match(/^\/api\/legal\/entities\/([^/]+)\/related-deals$/);
+    if (req.method === "GET" && relatedDealsMatch) {
+      req.params = { id: relatedDealsMatch[1] };
+      return handleRelatedDeals(req, res);
+    }
+
+    // ========== PHASE 5.1: GC APPROVAL QUEUE ==========
+
+    // GET /api/legal/gc/approval-queue - Get approval queue (General Counsel only)
+    if (req.method === "GET" && path === "/api/legal/gc/approval-queue") {
+      return handleGetApprovalQueue(req, res);
+    }
+
+    // POST /api/legal/matters/:matterId/request-gc-review - Request GC review
+    const requestGCReviewMatch = path.match(/^\/api\/legal\/matters\/([^/]+)\/request-gc-review$/);
+    if (req.method === "POST" && requestGCReviewMatch) {
+      req.body = await readJsonBody();
+      req.params = { matterId: requestGCReviewMatch[1] };
+      return handleRequestGCReview(req, res);
+    }
+
+    // POST /api/legal/gc/approve/:matterId - Approve GC review
+    const approveGCMatch = path.match(/^\/api\/legal\/gc\/approve\/([^/]+)$/);
+    if (req.method === "POST" && approveGCMatch) {
+      req.body = await readJsonBody();
+      req.params = { matterId: approveGCMatch[1] };
+      return handleApproveGCReview(req, res);
+    }
+
+    // POST /api/legal/gc/reject/:matterId - Reject GC review (requires notes)
+    const rejectGCMatch = path.match(/^\/api\/legal\/gc\/reject\/([^/]+)$/);
+    if (req.method === "POST" && rejectGCMatch) {
+      req.body = await readJsonBody();
+      req.params = { matterId: rejectGCMatch[1] };
+      return handleRejectGCReview(req, res);
+    }
+
+    // 404 for unmatched legal routes
+    sendError(res, 404, "Legal route not found");
+    return;
+  }
+
+  // ========== N8N WORKFLOW CALLBACKS ==========
+  // Routes: /api/n8n/* - Called by n8n workflows (HMAC authenticated)
+  if (path.startsWith("/api/n8n/")) {
+    // POST /api/n8n/generate-email
+    if (req.method === "POST" && path === "/api/n8n/generate-email") {
+      return handleGenerateEmail(req, res, readJsonBody);
+    }
+    // POST /api/n8n/create-gp-approval-task
+    if (req.method === "POST" && path === "/api/n8n/create-gp-approval-task") {
+      return handleCreateGPApprovalTask(req, res, readJsonBody);
+    }
+    // POST /api/n8n/email-drafts/:id/approve
+    const approveMatch = path.match(/^\/api\/n8n\/email-drafts\/([^/]+)\/approve$/);
+    if (req.method === "POST" && approveMatch) {
+      const authUser = await requireAuth(req, res).catch(() => null);
+      return handleApproveEmailDraft(req, res, approveMatch[1], readJsonBody, authUser);
+    }
+    // POST /api/n8n/email-drafts/:id/reject
+    const rejectMatch = path.match(/^\/api\/n8n\/email-drafts\/([^/]+)\/reject$/);
+    if (req.method === "POST" && rejectMatch) {
+      const authUser = await requireAuth(req, res).catch(() => null);
+      return handleRejectEmailDraft(req, res, rejectMatch[1], readJsonBody, authUser);
+    }
+    // POST /api/n8n/send-email
+    if (req.method === "POST" && path === "/api/n8n/send-email") {
+      return handleSendEmail(req, res, readJsonBody);
+    }
+    // POST /api/n8n/send-direct-email (for automated notifications without draft)
+    if (req.method === "POST" && path === "/api/n8n/send-direct-email") {
+      return handleSendDirectEmail(req, res, readJsonBody);
+    }
+    // POST /api/n8n/send-sms
+    if (req.method === "POST" && path === "/api/n8n/send-sms") {
+      // Import validation from n8n-callbacks for consistency
+      const crypto = await import("node:crypto");
+      const N8N_SECRET = process.env.BFF_N8N_CALLBACK_SECRET?.trim();
+      const validateSig = (req, body) => {
+        if (!N8N_SECRET) return { valid: false, error: "Secret not configured" };
+        const sig = req.headers["x-n8n-signature"];
+        if (!sig) return { valid: false, error: "Missing signature" };
+        const expected = `sha256=${crypto.createHmac("sha256", N8N_SECRET).update(JSON.stringify(body)).digest("hex")}`;
+        try {
+          return { valid: crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)) };
+        } catch { return { valid: false, error: "Validation failed" }; }
+      };
+      return handleN8nSendSms(req, res, readJsonBody, validateSig);
+    }
+    // POST /api/n8n/create-notification
+    if (req.method === "POST" && path === "/api/n8n/create-notification") {
+      return handleCreateNotification(req, res, readJsonBody);
+    }
+    // POST /api/n8n/update-reminder-state
+    if (req.method === "POST" && path === "/api/n8n/update-reminder-state") {
+      return handleUpdateReminderState(req, res, readJsonBody);
+    }
+    // POST /api/n8n/expire-invitation
+    if (req.method === "POST" && path === "/api/n8n/expire-invitation") {
+      return handleExpireInvitation(req, res, readJsonBody);
+    }
+    // GET /api/n8n/invitations/:id/status
+    const statusMatch = path.match(/^\/api\/n8n\/invitations\/([^/]+)\/status$/);
+    if (req.method === "GET" && statusMatch) {
+      return handleCheckInvitationStatus(req, res, statusMatch[1]);
+    }
+    // GET /api/n8n/email-drafts (list - for GP UI)
+    if (req.method === "GET" && path === "/api/n8n/email-drafts") {
+      const authUser = await requireAuth(req, res);
+      if (!authUser) return;
+      return handleListEmailDrafts(req, res, authUser, url);
+    }
+    // GET /api/n8n/email-drafts/:id (single - for GP UI)
+    const draftMatch = path.match(/^\/api\/n8n\/email-drafts\/([^/]+)$/);
+    if (req.method === "GET" && draftMatch) {
+      const authUser = await requireAuth(req, res);
+      if (!authUser) return;
+      return handleGetEmailDraft(req, res, draftMatch[1], authUser);
+    }
+    // GET /api/n8n/distributions/:id/details (for n8n workflow)
+    const distDetailsMatch = path.match(/^\/api\/n8n\/distributions\/([^/]+)\/details$/);
+    if (req.method === "GET" && distDetailsMatch) {
+      return handleGetDistributionDetails(req, res, distDetailsMatch[1]);
+    }
+    // GET /api/n8n/deals/:dealId/lp-actors (for n8n workflow)
+    const lpActorsMatch = path.match(/^\/api\/n8n\/deals\/([^/]+)\/lp-actors$/);
+    if (req.method === "GET" && lpActorsMatch) {
+      return handleGetDealLPActors(req, res, lpActorsMatch[1]);
+    }
+    // GET /api/n8n/capital-calls/:id/details (for n8n workflow)
+    const callDetailsMatch = path.match(/^\/api\/n8n\/capital-calls\/([^/]+)\/details$/);
+    if (req.method === "GET" && callDetailsMatch) {
+      return handleGetCapitalCallDetails(req, res, callDetailsMatch[1]);
+    }
+    // GET /api/n8n/capital-calls/:id/unfunded (for reminder workflow)
+    const unfundedMatch = path.match(/^\/api\/n8n\/capital-calls\/([^/]+)\/unfunded$/);
+    if (req.method === "GET" && unfundedMatch) {
+      return handleGetUnfundedAllocations(req, res, unfundedMatch[1]);
+    }
+
+    // ========== SCHEDULER MIGRATION ENDPOINTS ==========
+    // These support the Node-cron to n8n migration
+
+    // GET /api/n8n/scheduler/deadline-scan - Get items needing reminders
+    if (req.method === "GET" && path === "/api/n8n/scheduler/deadline-scan") {
+      return handleDeadlineScan(req, res);
+    }
+    // GET /api/n8n/scheduler/escalation-scan - Get overdue tasks for escalation
+    if (req.method === "GET" && path === "/api/n8n/scheduler/escalation-scan") {
+      return handleEscalationScan(req, res);
+    }
+    // GET /api/n8n/scheduler/snooze-scan - Get expired snoozes
+    if (req.method === "GET" && path === "/api/n8n/scheduler/snooze-scan") {
+      return handleSnoozeScan(req, res);
+    }
+    // POST /api/n8n/scheduler/process-reminder - Process single reminder
+    if (req.method === "POST" && path === "/api/n8n/scheduler/process-reminder") {
+      return handleProcessReminder(req, res, readJsonBody);
+    }
+    // POST /api/n8n/scheduler/process-escalation - Process single escalation
+    if (req.method === "POST" && path === "/api/n8n/scheduler/process-escalation") {
+      return handleProcessEscalation(req, res, readJsonBody);
+    }
+    // POST /api/n8n/scheduler/process-snooze-expiry - Process single snooze expiry
+    if (req.method === "POST" && path === "/api/n8n/scheduler/process-snooze-expiry") {
+      return handleProcessSnoozeExpiry(req, res, readJsonBody);
+    }
+    // POST /api/n8n/scheduler/log-completion - Log scheduler run from n8n
+    if (req.method === "POST" && path === "/api/n8n/scheduler/log-completion") {
+      return handleLogSchedulerCompletion(req, res, readJsonBody);
+    }
+
+    return sendError(res, 404, "n8n endpoint not found");
+  }
+
+  // ========== TWILIO WEBHOOKS ==========
+  // POST /api/webhooks/twilio/status - SMS status callbacks
+  if (req.method === "POST" && path === "/api/webhooks/twilio/status") {
+    return handleTwilioStatusCallback(req, res, readJsonBody);
+  }
+
   // Not found
   sendError(res, 404, "Not found");
 }
 
-const server = createServer((req, res) => {
-  handleRequest(req, res).catch((error) => {
+// Wrap handleRequest with global error handling
+const wrappedHandler = withErrorHandling(async (req, res) => {
+  try {
+    await handleRequest(req, res);
+  } catch (error) {
+    // Convert kernel errors to ApiError
     if (error?.type === "KERNEL_UNAVAILABLE") {
-      return sendKernelUnavailable(res, error);
+      throw ApiError.kernelUnavailable(error);
     }
     if (typeof error?.status === "number" && error.status >= 500) {
-      return sendKernelUnavailable(res, error);
+      throw ApiError.kernelUnavailable(error);
     }
     if (error?.status === 404 && error?.data?.message === "Deal not found") {
-      return sendError(res, 404, "Kernel deal not found");
+      throw ApiError.notFound("Kernel deal");
     }
     if (typeof error?.status === "number") {
       const message = error?.data?.message ?? "Kernel request failed";
-      return sendError(res, error.status, message, error.data);
+      throw new ApiError('EXTERNAL_SERVICE_ERROR', message, {
+        status: error.status,
+        details: error.data
+      });
     }
-    console.error("BFF error:", error);
-    sendError(res, 500, "BFF request failed");
-  });
-});
+    // Re-throw ApiErrors as-is
+    if (isApiError(error)) {
+      throw error;
+    }
+    // Unexpected errors
+    throw ApiError.internal(error?.message || "BFF request failed");
+  }
+}, 'main');
+
+const server = createServer(wrappedHandler);
+
+// Initialize Sentry error tracking
+const sentryInitialized = initSentry();
+if (sentryInitialized) {
+  serverLog.info("Sentry error tracking initialized");
+} else {
+  serverLog.info("Sentry not configured (SENTRY_DSN not set)");
+}
 
 server.listen(PORT, "0.0.0.0", async () => {
+  serverLog.info("Server started", { port: PORT, kernel: KERNEL_BASE_URL, env: process.env.NODE_ENV });
   console.log(`Canonical BFF listening on http://localhost:${PORT}`);
   console.log(`Kernel target: ${KERNEL_BASE_URL}`);
 
@@ -3073,4 +4234,58 @@ server.listen(PORT, "0.0.0.0", async () => {
   } catch (error) {
     console.error("Failed to start reminder scheduler:", error);
   }
+
+  // Start error watcher for live monitoring (check every 5 seconds)
+  if (process.env.NODE_ENV !== 'test') {
+    try {
+      startErrorWatcher(5000);
+      console.log("Error watcher started (live monitoring enabled)");
+    } catch (error) {
+      console.error("Failed to start error watcher:", error);
+    }
+  }
+});
+
+// Graceful shutdown handlers
+async function gracefulShutdown(signal) {
+  serverLog.info("Shutdown signal received", { signal });
+  console.log(`\n${signal} received, shutting down gracefully...`);
+
+  // Close server to stop accepting new connections
+  server.close(async () => {
+    serverLog.info("Server closed, flushing pending events");
+
+    try {
+      // Flush Sentry events before exit
+      await flushSentry(5000);
+      serverLog.info("Sentry flushed successfully");
+    } catch (error) {
+      serverLog.error("Failed to flush Sentry", { error: error.message });
+    }
+
+    serverLog.info("Shutdown complete");
+    process.exit(0);
+  });
+
+  // Force exit after 10 seconds if graceful shutdown fails
+  setTimeout(() => {
+    serverLog.error("Forced shutdown - graceful shutdown timeout");
+    process.exit(1);
+  }, 10000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Capture unhandled errors to Sentry
+process.on('uncaughtException', (error) => {
+  serverLog.error("Uncaught exception", { error: error.message, stack: error.stack });
+  captureException(error, { component: 'process', type: 'uncaughtException' });
+  // Give Sentry time to send, then exit
+  flushSentry(2000).finally(() => process.exit(1));
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  serverLog.error("Unhandled rejection", { reason: String(reason) });
+  captureException(reason instanceof Error ? reason : new Error(String(reason)), { component: 'process', type: 'unhandledRejection' });
 });

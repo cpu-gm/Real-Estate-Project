@@ -20,6 +20,7 @@ export function BuyerResponseCard({
   onAuthorize,
   onDecline,
   onSendNDA,
+  onClick,
   isAnonymous = false
 }) {
   const config = RESPONSE_CONFIG[response.response] || RESPONSE_CONFIG.INTERESTED;
@@ -43,7 +44,10 @@ export function BuyerResponseCard({
   };
 
   return (
-    <Card>
+    <Card
+      className={onClick ? "cursor-pointer hover:shadow-md transition-shadow" : ""}
+      onClick={onClick}
+    >
       <CardContent className="pt-4">
         <div className="flex items-start justify-between mb-3">
           <div>

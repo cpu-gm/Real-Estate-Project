@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Exclusive Agency Listing Agreement</title>
+  <style>
+    body { font-family: 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; max-width: 8.5in; margin: 0 auto; padding: 1in; }
+    .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 25px; }
+    .header h1 { font-size: 16pt; margin: 0; text-transform: uppercase; }
+    .section { margin-bottom: 20px; }
+    .section-title { font-weight: bold; text-decoration: underline; margin-bottom: 10px; }
+    .field { margin-bottom: 8px; }
+    .field-label { font-weight: bold; }
+    .signature-line { border-bottom: 1px solid #333; min-width: 200px; display: inline-block; margin: 0 10px; }
+    .highlight { background-color: #ffffcc; padding: 10px; border: 1px solid #ccc; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Exclusive Agency Listing Agreement</h1>
+    <p>Commercial Real Estate Listing</p>
+  </div>
+
+  <div class="highlight">
+    <strong>NOTICE:</strong> This is an exclusive agency agreement. The Seller retains the right to sell the property directly without paying a commission. However, if any broker (including cooperating brokers) procures the buyer, commission is due.
+  </div>
+
+  <div class="section">
+    <p><strong>THIS AGREEMENT</strong> is entered into as of <strong>{{EFFECTIVE_DATE}}</strong> between:</p>
+    <div class="field">
+      <span class="field-label">SELLER:</span> {{SELLER_NAME}} ("Seller")
+    </div>
+    <div class="field">
+      <span class="field-label">BROKER:</span> {{BROKER_NAME}} ("Broker")
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">1. PROPERTY</div>
+    <p>Seller grants Broker the exclusive agency right to market and offer for sale:</p>
+    <div class="field">
+      <span class="field-label">Property Address:</span> {{PROPERTY_ADDRESS}}
+    </div>
+    <div class="field">
+      <span class="field-label">Property Type:</span> {{PROPERTY_TYPE}}
+    </div>
+    <div class="field">
+      <span class="field-label">Legal Description:</span> {{LEGAL_DESCRIPTION}}
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">2. LISTING PRICE</div>
+    <p>The Property shall be offered for sale at an initial listing price of <strong>{{LISTING_PRICE}}</strong>, subject to adjustment by mutual written agreement.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">3. TERM</div>
+    <p>This Agreement shall commence on <strong>{{START_DATE}}</strong> and expire on <strong>{{END_DATE}}</strong>, unless extended by written agreement or terminated earlier pursuant to this Agreement.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">4. EXCLUSIVE AGENCY GRANT</div>
+    <p>Seller grants Broker the exclusive agency right to market and sell the Property during the Term. This means:</p>
+    <ul>
+      <li><strong>Broker Commission Due:</strong> If the Property is sold through the efforts of Broker, any cooperating broker, or any other real estate licensee during the Term;</li>
+      <li><strong>No Commission Due:</strong> If Seller sells the Property directly to a buyer whom Seller procured without any assistance from Broker or any other real estate licensee.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">5. COMMISSION</div>
+    <p>Seller agrees to pay Broker a commission as follows:</p>
+    <div class="field">
+      <span class="field-label">Commission:</span> {{COMMISSION}}
+    </div>
+    <p>Commission shall be earned and payable upon the earlier of: (a) closing of the sale; (b) Seller's default under a binding purchase agreement; or (c) Seller's refusal to close after accepting an offer meeting the listing terms.</p>
+    <p><strong>Cooperating Broker Compensation:</strong> Broker is authorized to offer compensation to cooperating brokers of {{COOP_COMMISSION}} from the commission earned.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">6. PROTECTION PERIOD</div>
+    <p>If, within <strong>{{PROTECTION_DAYS}}</strong> days after expiration or termination of this Agreement, Seller enters into a contract to sell the Property to any buyer who was introduced to the Property by Broker during the Term, Seller shall pay the commission set forth above.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">7. SELLER'S RESERVED RIGHTS</div>
+    <p>Seller expressly reserves the right to sell the Property directly to a buyer procured solely by Seller's own efforts, without any involvement by Broker or any other real estate licensee, without obligation to pay commission.</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">8. BROKER'S DUTIES</div>
+    <p>Broker agrees to:</p>
+    <ul>
+      <li>Market the Property professionally and diligently;</li>
+      <li>Provide regular updates on marketing activities and buyer interest;</li>
+      <li>Present all offers promptly to Seller;</li>
+      <li>Maintain confidentiality of Seller's financial and personal information;</li>
+      <li>Comply with all applicable real estate laws and regulations.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">9. SELLER'S DUTIES</div>
+    <p>Seller agrees to:</p>
+    <ul>
+      <li>Refer all buyer inquiries to Broker;</li>
+      <li>Provide accurate information about the Property;</li>
+      <li>Make the Property available for showings with reasonable notice;</li>
+      <li>Disclose all known material defects;</li>
+      <li>Notify Broker immediately if Seller is contacted directly by a potential buyer.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">10. TERMINATION</div>
+    <p>This Agreement may be terminated:</p>
+    <ul>
+      <li>By mutual written agreement;</li>
+      <li>By Seller upon {{TERMINATION_NOTICE_DAYS}} days written notice;</li>
+      <li>Immediately upon material breach by either party.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">11. SIGNATURES</div>
+    <p>The parties have executed this Agreement as of the dates below:</p>
+    <br>
+    <div>
+      <strong>SELLER:</strong><br><br>
+      Signature: <span class="signature-line"></span> Date: <span class="signature-line"></span>
+      <br>Print Name: {{SELLER_NAME}}
+    </div>
+    <br><br>
+    <div>
+      <strong>BROKER:</strong><br><br>
+      Signature: <span class="signature-line"></span> Date: <span class="signature-line"></span>
+      <br>Print Name: {{BROKER_NAME}}
+      <br>License #: {{BROKER_LICENSE}}
+    </div>
+  </div>
+</body>
+</html>

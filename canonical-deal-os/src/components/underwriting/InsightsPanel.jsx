@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { bff } from '@/api/bffClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -25,8 +25,11 @@ import {
   Building2,
   BarChart3,
   Shield,
-  Loader2
+  Loader2,
+  Lock
 } from 'lucide-react';
+import { useAIConsent } from '@/lib/hooks/useAIConsent';
+import { AIConsentModal } from '@/components/ai/AIConsentModal';
 
 /**
  * InsightsPanel - Displays AI-generated insights for a deal
@@ -40,6 +43,9 @@ import {
  */
 export default function InsightsPanel({ dealId }) {
   const [expandedCategories, setExpandedCategories] = useState(new Set(['CRITICAL', 'WARNING']));
+  const [showConsentModal, setShowConsentModal] = useState(false);
+  const queryClient = useQueryClient();
+  const { grantConsent, isGranting } = useAIConsent();
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['deal-insights', dealId],
@@ -151,6 +157,53 @@ export default function InsightsPanel({ dealId }) {
           </div>
         </CardContent>
       </Card>
+    );
+  }
+
+  // Check if error is 451 (AI consent required)
+  const needsConsent = error?.status === 451;
+
+  const handleConsentGranted = async (features) => {
+    await grantConsent(features);
+    // Invalidate and refetch insights after consent is granted
+    queryClient.invalidateQueries({ queryKey: ['deal-insights', dealId] });
+  };
+
+  if (needsConsent) {
+    return (
+      <>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-purple-600" />
+              AI Insights
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-center py-6">
+              <Lock className="w-10 h-10 mx-auto mb-3 text-purple-400" />
+              <p className="text-sm font-medium mb-2">AI Features Require Consent</p>
+              <p className="text-xs text-gray-500 mb-4">
+                Enable AI-powered insights to see automated analysis of this deal.
+              </p>
+              <Button
+                onClick={() => setShowConsentModal(true)}
+                className="bg-purple-600 hover:bg-purple-700"
+              >
+                <Sparkles className="w-4 h-4 mr-2" />
+                Enable AI Features
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <AIConsentModal
+          open={showConsentModal}
+          onOpenChange={setShowConsentModal}
+          onConsent={handleConsentGranted}
+          isGranting={isGranting}
+        />
+      </>
     );
   }
 

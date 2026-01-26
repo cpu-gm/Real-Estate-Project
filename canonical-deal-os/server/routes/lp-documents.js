@@ -8,6 +8,8 @@
 import { getPrisma } from "../db.js";
 import { deleteCache, deleteCacheByPrefix } from "../runtime.js";
 import crypto from "node:crypto";
+import { UploadLPDocumentSchema } from "../middleware/route-schemas.js";
+import { createValidationLogger } from "../services/validation-logger.js";
 
 // Document categories
 export const LP_DOCUMENT_CATEGORIES = {
@@ -34,24 +36,30 @@ function sendError(res, status, message, details) {
  * Upload LP document
  * POST /api/lp/documents
  * Body: { dealId, filename, documentType, category, year?, quarter?, visibility, storageKey, mimeType, sizeBytes, lpActorIds? }
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleUploadDocument(req, res, readJsonBody, resolveUserId, resolveUserName) {
-  const body = await readJsonBody(req);
+export async function handleUploadDocument(req, res, readJsonBody, authUser) {
+  const validationLog = createValidationLogger('handleUploadDocument');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
 
-  if (!body?.dealId || !body?.filename || !body?.documentType || !body?.category) {
-    return sendError(res, 400, "Missing required fields: dealId, filename, documentType, category");
-  }
-
-  // Validate category
-  if (!LP_DOCUMENT_CATEGORIES[body.category]) {
-    return sendError(res, 400, "Invalid category", {
-      validCategories: Object.keys(LP_DOCUMENT_CATEGORIES)
+  // Validate with Zod schema
+  const parseResult = UploadLPDocumentSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
     });
   }
 
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
+
   const prisma = getPrisma();
-  const userId = resolveUserId(req);
-  const userName = resolveUserName(req);
+  const userId = authUser.id;  // T1.3: Use validated JWT identity
+  const userName = authUser.name;
 
   const docId = crypto.randomUUID();
   const visibility = body.visibility || "ALL_LPS";
