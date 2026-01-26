@@ -35,7 +35,10 @@ function sendError(res, status, message, details) {
   sendJson(res, status, { message, details: details ?? null });
 }
 
-export async function handleDealParse(req, res, readJsonBody, resolveUserId) {
+/**
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
+ */
+export async function handleDealParse(req, res, readJsonBody, authUser) {
   const body = await readJsonBody(req);
   const inputText = body?.inputText ?? body?.text ?? null;
   const inputSource = body?.inputSource ?? "USER_TEXT";
@@ -47,7 +50,7 @@ export async function handleDealParse(req, res, readJsonBody, resolveUserId) {
     return sendError(res, 400, "Invalid request", parsed.error.flatten());
   }
 
-  const userId = resolveUserId(req);
+  const userId = authUser?.id ?? null;  // T1.3: Use validated JWT identity
   const prisma = getPrisma();
   const startedAt = Date.now();
 
@@ -286,7 +289,10 @@ export async function handleForceAccept(req, res, readJsonBody, getPrisma) {
   sendJson(res, 200, { ok: true });
 }
 
-export async function handleCorrections(req, res, dealId, readJsonBody, resolveUserId, getPrisma) {
+/**
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
+ */
+export async function handleCorrections(req, res, dealId, readJsonBody, authUser, getPrisma) {
   const body = await readJsonBody(req);
   const parsed = correctionsRequestSchema.safeParse(body ?? {});
   if (!parsed.success) {
@@ -294,7 +300,7 @@ export async function handleCorrections(req, res, dealId, readJsonBody, resolveU
   }
 
   const prisma = getPrisma();
-  const userId = resolveUserId(req);
+  const userId = authUser?.id ?? null;  // T1.3: Use validated JWT identity
 
   if (parsed.data.diffs.length === 0) {
     return sendJson(res, 200, { ok: true });

@@ -5,7 +5,10 @@
       "Bash(dir /B /S)",
       "Bash(findstr:*)",
       "Bash(node -c:*)",
-      "Bash(BFF_DB_URL=\"file:../.data/llm-airlock.db\" node:*)"
+      "Bash(BFF_DB_URL=\"file:../.data/llm-airlock.db\" node:*)",
+      "Bash(if not exist \"c:\\\\Real Estate Project\\\\canonical-deal-os\\\\src\\\\components\\\\ai\" mkdir \"c:\\\\Real Estate Project\\\\canonical-deal-os\\\\src\\\\components\\\\ai\")",
+      "mcp__n8n-mcp__tools_documentation",
+      "mcp__n8n-mcp__search_templates"
     ],
     "additionalDirectories": [
       "c:\\Users\\majes\\OneDrive\\Documents\\GitHub\\Github"
@@ -18,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/update-context.js"
+            "command": "node .claude/hooks/update-context.cjs"
           }
         ]
       },
@@ -27,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/update-context.js"
+            "command": "node .claude/hooks/update-context.cjs"
           }
         ]
       }
@@ -37,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/update-context.js"
+            "command": "node .claude/hooks/update-context.cjs"
           }
         ]
       }

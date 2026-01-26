@@ -30,13 +30,23 @@ import {
 } from '@/components/ui/select';
 
 const ROLES = [
-  { value: 'GP', label: 'GP (General Partner)', description: 'Full deal management access' },
+  { value: 'GP', label: 'GP (General Partner)', description: 'Full deal management access - buy or sell properties' },
   { value: 'GP Analyst', label: 'GP Analyst', description: 'Deal analysis and review' },
+  { value: 'Broker', label: 'Broker', description: 'Licensed real estate broker - list and market properties' },
   { value: 'Lender', label: 'Lender', description: 'Loan review and approval' },
   { value: 'Counsel', label: 'Counsel', description: 'Legal review' },
   { value: 'LP', label: 'LP (Limited Partner)', description: 'Investment monitoring' },
   { value: 'Auditor', label: 'Auditor', description: 'Compliance and audit' },
   { value: 'Regulator', label: 'Regulator', description: 'Regulatory oversight' },
+];
+
+// US states for broker license
+const US_STATES = [
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 'DC'
 ];
 
 export default function Signup() {
@@ -49,7 +59,11 @@ export default function Signup() {
     confirmPassword: '',
     organizationId: '',
     organizationName: '',
-    role: 'GP Analyst'
+    role: 'GP Analyst',
+    // Broker-specific fields
+    brokerLicenseNo: '',
+    brokerLicenseState: '',
+    brokerageName: ''
   });
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -120,6 +134,18 @@ export default function Signup() {
       return;
     }
 
+    // Broker-specific validation
+    if (formData.role === 'Broker') {
+      if (!formData.brokerLicenseNo.trim()) {
+        setError('License number is required for brokers');
+        return;
+      }
+      if (!formData.brokerLicenseState) {
+        setError('License state is required for brokers');
+        return;
+      }
+    }
+
     setIsLoading(true);
 
     try {
@@ -132,7 +158,13 @@ export default function Signup() {
           password: formData.password,
           organizationId: isNewOrg ? null : formData.organizationId,
           organizationName: isNewOrg ? formData.organizationName : null,
-          role: formData.role
+          role: formData.role,
+          // Broker-specific fields (only sent if role is Broker)
+          ...(formData.role === 'Broker' && {
+            brokerLicenseNo: formData.brokerLicenseNo,
+            brokerLicenseState: formData.brokerLicenseState,
+            brokerageName: formData.brokerageName || null
+          })
         })
       });
 
@@ -308,6 +340,60 @@ export default function Signup() {
                   {ROLES.find(r => r.value === formData.role)?.description}
                 </p>
               </div>
+
+              {/* Broker License Fields - only shown when Broker role selected */}
+              {formData.role === 'Broker' && (
+                <div className="space-y-4 p-4 bg-blue-50 rounded-lg border border-blue-100">
+                  <p className="text-sm font-medium text-blue-800">Broker License Information</p>
+
+                  {/* License Number */}
+                  <div className="space-y-2">
+                    <Label htmlFor="brokerLicenseNo">License Number *</Label>
+                    <Input
+                      id="brokerLicenseNo"
+                      type="text"
+                      placeholder="e.g., 01234567"
+                      value={formData.brokerLicenseNo}
+                      onChange={(e) => handleChange('brokerLicenseNo', e.target.value)}
+                    />
+                  </div>
+
+                  {/* License State */}
+                  <div className="space-y-2">
+                    <Label>License State *</Label>
+                    <Select
+                      value={formData.brokerLicenseState}
+                      onValueChange={(value) => handleChange('brokerLicenseState', value)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select state" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {US_STATES.map(state => (
+                          <SelectItem key={state} value={state}>
+                            {state}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Brokerage Firm (optional) */}
+                  <div className="space-y-2">
+                    <Label htmlFor="brokerageName">Brokerage Firm (optional)</Label>
+                    <Input
+                      id="brokerageName"
+                      type="text"
+                      placeholder="e.g., CBRE, JLL, Cushman & Wakefield"
+                      value={formData.brokerageName}
+                      onChange={(e) => handleChange('brokerageName', e.target.value)}
+                    />
+                    <p className="text-xs text-slate-500">
+                      If your firm is already on the platform, you can join after signup.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* Password */}
               <div className="space-y-2">

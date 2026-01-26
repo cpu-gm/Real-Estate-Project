@@ -15,6 +15,7 @@ import { bff } from "@/api/bffClient";
 import { createPageUrl } from "@/utils";
 import { debugLog } from "@/lib/debug";
 import { toast } from "@/components/ui/use-toast";
+import { ArrowLeft } from "lucide-react";
 
 export default function DealDraftDetail() {
   const [searchParams] = useSearchParams();
@@ -37,11 +38,12 @@ export default function DealDraftDetail() {
     queryKey: ["omLatest", draftId],
     queryFn: () => bff.om.getLatest(draftId),
     enabled: !!draftId,
+    retry: false, // Don't retry on 404 - OM may not exist for unlisted properties
     onSuccess: (data) => {
       debugLog("om", "Latest OM loaded", { draftId, omId: data?.id });
     },
-    onError: (error) => {
-      debugLog("om", "Latest OM load failed", { draftId, message: error?.message });
+    onError: () => {
+      // Silently fail - OM not required for unlisted portfolio properties
     }
   });
 
@@ -124,13 +126,22 @@ export default function DealDraftDetail() {
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">
-            {draft?.propertyName || draft?.propertyAddress || "Untitled Deal"}
-          </h1>
-          {draft?.propertyAddress && (
-            <p className="text-sm text-gray-500 mt-1">{draft.propertyAddress}</p>
-          )}
+        <div className="flex items-center gap-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => navigate(createPageUrl(`DealWorkspace?dealDraftId=${draftId}`))}
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+          <div>
+            <h1 className="text-2xl font-bold">
+              {draft?.propertyName || draft?.propertyAddress || "Untitled Deal"}
+            </h1>
+            {draft?.propertyAddress && (
+              <p className="text-sm text-gray-500 mt-1">{draft.propertyAddress}</p>
+            )}
+          </div>
         </div>
         {draft?.status && <StatusBadge status={draft.status} />}
       </div>
@@ -173,21 +184,34 @@ export default function DealDraftDetail() {
             <CardHeader>
               <CardTitle className="text-base">Workflow status</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-wrap gap-3 items-center">
-              <Badge variant="outline">
-                Unverified fields: {stats?.fieldsNeedingVerification?.length || 0}
-              </Badge>
-              <Badge variant="outline">Open conflicts: {conflicts.length}</Badge>
-              {uiStage?.canGenerateOM && (
-                <Button onClick={() => generateMutation.mutate()} disabled={generateMutation.isPending}>
-                  {generateMutation.isPending ? "Generating..." : "Generate OM Draft"}
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-3 items-center">
+                <Badge variant="outline">
+                  Unverified fields: {stats?.fieldsNeedingVerification?.length || 0}
+                </Badge>
+                <Badge variant="outline">Open conflicts: {conflicts.length}</Badge>
+                {uiStage?.canGenerateOM && (
+                  <Button onClick={() => generateMutation.mutate()} disabled={generateMutation.isPending}>
+                    {generateMutation.isPending ? "Generating..." : "Generate OM Draft"}
+                  </Button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {omQuery.data?.id && (
+                  <Button variant="outline" onClick={() => navigate(createPageUrl(`OMEditor?dealDraftId=${draftId}`))}>
+                    Open OM Editor
+                  </Button>
+                )}
+                <Button variant="outline" onClick={() => navigate(createPageUrl(`DistributionManagement?dealDraftId=${draftId}`))}>
+                  Manage Distribution
                 </Button>
-              )}
-              {omQuery.data?.id && (
-                <Button variant="outline" onClick={() => navigate(createPageUrl(`OMEditor?dealDraftId=${draftId}`))}>
-                  Open OM Editor
+                <Button variant="outline" onClick={() => navigate(createPageUrl(`BuyerReviewQueue?dealDraftId=${draftId}`))}>
+                  Review Responses
                 </Button>
-              )}
+                <Button variant="outline" onClick={() => navigate(createPageUrl(`DealProgress?dealDraftId=${draftId}`))}>
+                  View Progress
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

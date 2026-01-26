@@ -10,8 +10,8 @@ export function DealDraftCard({ draft }) {
   const navigate = useNavigate();
 
   const handleClick = () => {
-    debugLog("intake", "Navigate to draft detail", { draftId: draft.id });
-    navigate(createPageUrl(`DealDraftDetail?id=${draft.id}`));
+    debugLog("intake", "Navigate to workspace", { draftId: draft.id });
+    navigate(createPageUrl(`DealWorkspace?dealDraftId=${draft.id}`));
   };
 
   return (

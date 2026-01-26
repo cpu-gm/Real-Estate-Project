@@ -1,0 +1,11 @@
+# n8n Environment Variables
+# Add these to your n8n Railway deployment
+
+# URL to your BFF server (where n8n sends callbacks)
+# For local dev: http://localhost:8787
+# For production: https://your-bff-domain.com
+BFF_BASE_URL=http://localhost:8787
+
+# HMAC secret for signing n8n callbacks to BFF
+# MUST match BFF_N8N_CALLBACK_SECRET in your BFF .env
+BFF_N8N_CALLBACK_SECRET=s6MBbexkq8lfnqgYcu0IBPKy24Wbfe9bR7Z/UluVjpg=

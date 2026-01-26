@@ -12,6 +12,7 @@ import {
   LISTING_TYPES,
   RESPONSE_TYPES
 } from '../services/distribution.js';
+import { checkDealDraftAccess } from '../middleware/auth.js';
 
 // Debug logging helper
 const DEBUG = process.env.DEBUG_ROUTES === 'true' || process.env.DEBUG === 'true';
@@ -46,6 +47,11 @@ export function dispatchDistributionRoutes(req, res, segments, readJsonBody, aut
   // POST /api/distribution/:distributionId/add-recipients - Add manual recipients
   if (method === 'POST' && segments[1] === 'add-recipients') {
     return handleAddRecipients(req, res, segments[0], readJsonBody, authUser);
+  }
+
+  // POST /api/distribution/:distributionId/add-by-email - Add recipients by email
+  if (method === 'POST' && segments[1] === 'add-by-email') {
+    return handleAddRecipientsByEmail(req, res, segments[0], readJsonBody, authUser);
   }
 
   // GET /api/distribution/:distributionId - Get distribution details
@@ -165,14 +171,149 @@ async function handleAddRecipients(req, res, distributionId, readJsonBody, authU
 }
 
 /**
+ * Add recipients by email
+ * POST /api/distribution/:distributionId/add-by-email
+ *
+ * Creates placeholder buyer users if they don't exist, then adds as recipients.
+ */
+async function handleAddRecipientsByEmail(req, res, distributionId, readJsonBody, authUser) {
+  debugLog('handleAddRecipientsByEmail', 'Adding recipients by email', { distributionId });
+
+  try {
+    const body = await readJsonBody();
+
+    if (!body.emails || !Array.isArray(body.emails) || body.emails.length === 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'emails array required' }));
+      return;
+    }
+
+    // Import Prisma client
+    const { PrismaClient } = await import('@prisma/client');
+    const prisma = new PrismaClient();
+
+    // Get distribution to find deal
+    const distribution = await distributionService.getDistribution(distributionId);
+
+    const addedRecipients = [];
+    const errors = [];
+
+    for (const email of body.emails) {
+      try {
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+          errors.push({ email, error: 'Invalid email format' });
+          continue;
+        }
+
+        // Find or create user by email
+        let user = await prisma.user.findUnique({
+          where: { email: email.toLowerCase() }
+        });
+
+        if (!user) {
+          // Create a placeholder buyer user
+          user = await prisma.user.create({
+            data: {
+              id: `buyer-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              email: email.toLowerCase(),
+              name: email.split('@')[0],
+              role: 'GP', // Default role, can act as buyer
+              status: 'PENDING',
+              createdAt: new Date(),
+              updatedAt: new Date()
+            }
+          });
+          debugLog('handleAddRecipientsByEmail', 'Created placeholder user', { email, userId: user.id });
+        }
+
+        // Check if already a recipient
+        const existingRecipient = await prisma.distributionRecipient.findFirst({
+          where: {
+            distributionId,
+            buyerUserId: user.id
+          }
+        });
+
+        if (existingRecipient) {
+          errors.push({ email, error: 'Already a recipient' });
+          continue;
+        }
+
+        // Create distribution recipient
+        const recipient = await prisma.distributionRecipient.create({
+          data: {
+            id: `dr-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            distributionId,
+            buyerUserId: user.id,
+            source: 'MANUAL_EMAIL',
+            sentAt: new Date(),
+            createdAt: new Date()
+          }
+        });
+
+        addedRecipients.push({
+          id: recipient.id,
+          email: user.email,
+          userId: user.id
+        });
+
+        debugLog('handleAddRecipientsByEmail', 'Recipient added', { email, recipientId: recipient.id });
+      } catch (err) {
+        errors.push({ email, error: err.message });
+      }
+    }
+
+    await prisma.$disconnect();
+
+    debugLog('handleAddRecipientsByEmail', 'Complete', {
+      added: addedRecipients.length,
+      errors: errors.length
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      added: addedRecipients,
+      errors: errors.length > 0 ? errors : undefined
+    }));
+  } catch (error) {
+    debugLog('handleAddRecipientsByEmail', 'Error', { error: error.message });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
+
+/**
  * Get distribution details
  * GET /api/distribution/:distributionId
  */
 async function handleGetDistribution(req, res, distributionId, authUser) {
   debugLog('handleGetDistribution', 'Fetching distribution', { distributionId });
 
+  if (!authUser) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not authenticated' }));
+    return;
+  }
+
   try {
     const distribution = await distributionService.getDistribution(distributionId);
+
+    // Check access to the deal draft
+    const accessResult = await checkDealDraftAccess({
+      userId: authUser.id,
+      userEmail: authUser.email,
+      userOrgId: authUser.organizationId,
+      dealDraftId: distribution.dealDraftId
+    });
+
+    if (!accessResult.allowed) {
+      debugLog('handleGetDistribution', 'Access denied', { reason: accessResult.reason });
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Access denied' }));
+      return;
+    }
 
     debugLog('handleGetDistribution', 'Distribution found', {
       id: distribution.id,
@@ -195,7 +336,28 @@ async function handleGetDistribution(req, res, distributionId, authUser) {
 async function handleGetDistributionsForDeal(req, res, dealDraftId, authUser) {
   debugLog('handleGetDistributionsForDeal', 'Fetching distributions', { dealDraftId });
 
+  if (!authUser) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not authenticated' }));
+    return;
+  }
+
   try {
+    // Check access to the deal draft
+    const accessResult = await checkDealDraftAccess({
+      userId: authUser.id,
+      userEmail: authUser.email,
+      userOrgId: authUser.organizationId,
+      dealDraftId
+    });
+
+    if (!accessResult.allowed) {
+      debugLog('handleGetDistributionsForDeal', 'Access denied', { reason: accessResult.reason });
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Access denied' }));
+      return;
+    }
+
     const distributions = await distributionService.getDistributionsForDeal(dealDraftId);
 
     debugLog('handleGetDistributionsForDeal', 'Distributions found', {
@@ -218,7 +380,34 @@ async function handleGetDistributionsForDeal(req, res, dealDraftId, authUser) {
 async function handleRecordView(req, res, recipientId, readJsonBody, authUser) {
   debugLog('handleRecordView', 'Recording view', { recipientId });
 
+  if (!authUser) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not authenticated' }));
+    return;
+  }
+
   try {
+    // Verify the recipient belongs to this user
+    const { PrismaClient } = await import('@prisma/client');
+    const prisma = new PrismaClient();
+
+    const recipient = await prisma.distributionRecipient.findUnique({
+      where: { id: recipientId }
+    });
+
+    if (!recipient) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Recipient not found' }));
+      return;
+    }
+
+    // Allow if user is the recipient OR admin
+    if (recipient.userId !== authUser.id && authUser.role !== 'Admin') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Can only record views for your own recipient record' }));
+      return;
+    }
+
     const body = await readJsonBody();
 
     const updated = await distributionService.recordView(recipientId, {
@@ -277,7 +466,28 @@ async function handleSubmitResponse(req, res, dealDraftId, readJsonBody, authUse
 async function handleGetResponses(req, res, dealDraftId, authUser) {
   debugLog('handleGetResponses', 'Fetching responses', { dealDraftId });
 
+  if (!authUser) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not authenticated' }));
+    return;
+  }
+
   try {
+    // Check access to the deal draft (only deal owner/broker should see responses)
+    const accessResult = await checkDealDraftAccess({
+      userId: authUser.id,
+      userEmail: authUser.email,
+      userOrgId: authUser.organizationId,
+      dealDraftId
+    });
+
+    if (!accessResult.allowed) {
+      debugLog('handleGetResponses', 'Access denied', { reason: accessResult.reason });
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Access denied' }));
+      return;
+    }
+
     // Import Prisma client
     const { PrismaClient } = await import('@prisma/client');
     const prisma = new PrismaClient();

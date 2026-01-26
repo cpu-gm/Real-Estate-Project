@@ -19,12 +19,14 @@ import {
   Lock,
   FileText,
   Send,
-  Building2
+  Building2,
+  Plus
 } from 'lucide-react';
 import { bff } from '@/api/bffClient';
 import { createPageUrl } from '@/utils';
 import { PageError } from '@/components/ui/page-state';
 import { useIntakeDealOverview } from '@/lib/hooks/useIntakeDealOverview';
+import { BrokerSelectionGrid, AddContactModal } from '@/components/contacts';
 
 const STEPS = [
   { id: 'pricing', title: 'Pricing', description: 'Set your asking price' },
@@ -177,68 +179,128 @@ function PricingStep({ data, onChange }) {
 }
 
 function BrokerStep({ data, onChange }) {
+  const [showAddBroker, setShowAddBroker] = useState(false);
+
+  // Fetch broker contacts
+  const { data: brokersData, isLoading: loadingBrokers } = useQuery({
+    queryKey: ['contacts', 'brokers'],
+    queryFn: () => bff.contacts.list({ contactType: 'BROKER', status: 'ACTIVE', limit: 100 }),
+    staleTime: 30000
+  });
+
+  // Fetch recent brokers
+  const { data: recentData } = useQuery({
+    queryKey: ['contacts', 'recent', 'BROKER'],
+    queryFn: () => bff.contacts.recent('BROKER', 5),
+    staleTime: 30000
+  });
+
+  const brokerContacts = brokersData?.contacts || [];
+  const recentBrokers = recentData?.contacts || [];
+
+  // Handle broker selection from grid
+  const handleSelectBroker = (contact) => {
+    onChange({
+      ...data,
+      brokerOption: 'invite',
+      selectedBrokerId: contact.id,
+      brokerEmail: contact.email || '',
+      brokerName: contact.name || '',
+      brokerCompany: contact.companyName || ''
+    });
+  };
+
+  // Handle no broker option
+  const handleNoBroker = () => {
+    onChange({
+      ...data,
+      brokerOption: 'none',
+      selectedBrokerId: null,
+      brokerEmail: '',
+      brokerName: '',
+      brokerCompany: ''
+    });
+  };
+
+  // Handle new broker created
+  const handleBrokerCreated = (contact) => {
+    handleSelectBroker(contact);
+    setShowAddBroker(false);
+  };
+
+  // If user selected "no broker", show confirmation
+  if (data.brokerOption === 'none' && !data.selectedBrokerId) {
+    return (
+      <div className="space-y-6">
+        <div className="text-center py-8 bg-slate-50 rounded-lg">
+          <Users className="h-12 w-12 text-slate-300 mx-auto mb-3" />
+          <h3 className="text-lg font-medium text-slate-900">Listing Without a Broker</h3>
+          <p className="text-slate-500 mt-1 mb-4">
+            You'll manage the sale yourself through the platform
+          </p>
+          <Button
+            variant="outline"
+            onClick={() => onChange({ ...data, brokerOption: null })}
+          >
+            Select a Broker Instead
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold text-slate-900 mb-2">Choose Your Broker</h2>
-        <p className="text-slate-500">Decide if you want to work with a broker or list independently.</p>
-      </div>
+      <BrokerSelectionGrid
+        contacts={brokerContacts}
+        selectedId={data.selectedBrokerId}
+        onSelect={handleSelectBroker}
+        onAddNew={() => setShowAddBroker(true)}
+        onNoBroker={handleNoBroker}
+        recentContacts={recentBrokers}
+        isLoading={loadingBrokers}
+      />
 
-      <RadioGroup
-        value={data.brokerOption || 'none'}
-        onValueChange={(value) => onChange({ ...data, brokerOption: value })}
-        className="space-y-3"
-      >
-        <div className="flex items-start space-x-3 p-4 border rounded-lg hover:bg-slate-50 cursor-pointer">
-          <RadioGroupItem value="invite" id="invite" className="mt-1" />
-          <div className="flex-1">
-            <Label htmlFor="invite" className="font-medium cursor-pointer">Invite a Broker</Label>
-            <p className="text-sm text-slate-500">Send an invitation to a broker to represent your listing</p>
-          </div>
-        </div>
-        <div className="flex items-start space-x-3 p-4 border rounded-lg hover:bg-slate-50 cursor-pointer">
-          <RadioGroupItem value="none" id="none" className="mt-1" />
-          <div className="flex-1">
-            <Label htmlFor="none" className="font-medium cursor-pointer">List Without Broker</Label>
-            <p className="text-sm text-slate-500">Manage the sale yourself through the platform</p>
-          </div>
-        </div>
-      </RadioGroup>
-
-      {data.brokerOption === 'invite' && (
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="brokerEmail">Broker Email</Label>
-            <Input
-              id="brokerEmail"
-              type="email"
-              placeholder="broker@example.com"
-              value={data.brokerEmail || ''}
-              onChange={(e) => onChange({ ...data, brokerEmail: e.target.value })}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="brokerName">Broker Name (Optional)</Label>
-            <Input
-              id="brokerName"
-              type="text"
-              placeholder="John Smith"
-              value={data.brokerName || ''}
-              onChange={(e) => onChange({ ...data, brokerName: e.target.value })}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="brokerCompany">Brokerage (Optional)</Label>
-            <Input
-              id="brokerCompany"
-              type="text"
-              placeholder="ABC Realty"
-              value={data.brokerCompany || ''}
-              onChange={(e) => onChange({ ...data, brokerCompany: e.target.value })}
-            />
+      {/* Manual entry fallback */}
+      {data.selectedBrokerId && (
+        <div className="p-4 bg-slate-50 rounded-lg space-y-3">
+          <p className="text-sm text-slate-600">
+            Or enter broker details manually:
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="brokerEmail" className="text-xs">Email</Label>
+              <Input
+                id="brokerEmail"
+                type="email"
+                placeholder="broker@example.com"
+                value={data.brokerEmail || ''}
+                onChange={(e) => onChange({ ...data, brokerEmail: e.target.value })}
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="brokerName" className="text-xs">Name</Label>
+              <Input
+                id="brokerName"
+                type="text"
+                placeholder="John Smith"
+                value={data.brokerName || ''}
+                onChange={(e) => onChange({ ...data, brokerName: e.target.value })}
+                className="h-9"
+              />
+            </div>
           </div>
         </div>
       )}
+
+      {/* Add Broker Modal */}
+      <AddContactModal
+        open={showAddBroker}
+        onOpenChange={setShowAddBroker}
+        defaultType="BROKER"
+        onSuccess={handleBrokerCreated}
+      />
     </div>
   );
 }

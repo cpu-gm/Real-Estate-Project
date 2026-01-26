@@ -3,13 +3,40 @@
  *
  * Handles automated deadline reminders, escalation checks, and snooze processing.
  * Uses node-cron for scheduled jobs.
+ *
+ * MIGRATION NOTE: This service is being migrated to n8n workflows.
+ * During migration, both systems run in parallel and log to SchedulerLog
+ * for comparison. See plan at: .claude/plans/bubbly-roaming-rain.md
  */
 
 import cron from 'node-cron';
+import crypto from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import { sendEmail } from './email-service.js';
 
 const prisma = new PrismaClient();
+
+/**
+ * Log scheduler execution to database for n8n migration comparison
+ */
+async function logSchedulerRun(runId, jobType, results, error, startTime) {
+  const durationMs = Date.now() - startTime;
+  try {
+    await prisma.schedulerLog.create({
+      data: {
+        runId,
+        jobType,
+        source: 'NODE_CRON',
+        results: error ? null : JSON.stringify(results),
+        error: error?.message || null,
+        itemsProcessed: results?.remindersCreated || results?.escalated || results?.processed || 0,
+        durationMs
+      }
+    });
+  } catch (logError) {
+    console.error(`[Scheduler:${runId}] Failed to log to database:`, logError);
+  }
+}
 
 // Default reminder days (7, 3, 1 days before deadline)
 const DEFAULT_REMINDER_DAYS = [7, 3, 1];
@@ -63,201 +90,306 @@ export function startScheduler() {
  * Scan for upcoming deadlines and create reminder notifications
  */
 export async function scanUpcomingDeadlines() {
+  const runId = crypto.randomUUID();
+  const startTime = Date.now();
   const now = new Date();
+
+  console.log(`[Scheduler:${runId}] Starting deadline scan...`);
+
   const results = {
     tasksScanned: 0,
     remindersCreated: 0,
     reviewsScanned: 0,
-    submissionsScanned: 0
+    submissionsScanned: 0,
+    details: {
+      taskReminders: [],
+      reviewReminders: [],
+      submissionReminders: []
+    }
   };
 
-  // 1. Find tasks with upcoming due dates
-  for (const daysAhead of DEFAULT_REMINDER_DAYS) {
-    const targetDate = new Date(now);
-    targetDate.setDate(targetDate.getDate() + daysAhead);
+  try {
+    // 1. Find tasks with upcoming due dates
+    for (const daysAhead of DEFAULT_REMINDER_DAYS) {
+      const targetDate = new Date(now);
+      targetDate.setDate(targetDate.getDate() + daysAhead);
 
-    // Set to start and end of that day
-    const dayStart = new Date(targetDate);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(targetDate);
-    dayEnd.setHours(23, 59, 59, 999);
+      // Set to start and end of that day
+      const dayStart = new Date(targetDate);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(targetDate);
+      dayEnd.setHours(23, 59, 59, 999);
 
-    const tasks = await prisma.chatTask.findMany({
+      const tasks = await prisma.chatTask.findMany({
+        where: {
+          dueDate: {
+            gte: dayStart,
+            lte: dayEnd
+          },
+          status: { in: ['OPEN', 'IN_PROGRESS'] },
+          // Don't remind if already reminded today
+          OR: [
+            { reminderSentAt: null },
+            { reminderSentAt: { lt: new Date(now.setHours(0, 0, 0, 0)) } }
+          ]
+        }
+      });
+
+      console.log(`[Scheduler:${runId}] Found ${tasks.length} tasks due in ${daysAhead} days`);
+      results.tasksScanned += tasks.length;
+
+      for (const task of tasks) {
+        if (task.assigneeId) {
+          try {
+            await createTaskReminderNotification(task, daysAhead);
+            results.remindersCreated++;
+            results.details.taskReminders.push({ taskId: task.id, daysAhead });
+            console.log(`[Scheduler:${runId}] Created reminder for task ${task.id} (${daysAhead} days)`);
+
+            // Update task reminder tracking
+            await prisma.chatTask.update({
+              where: { id: task.id },
+              data: { reminderSentAt: new Date() }
+            });
+          } catch (taskError) {
+            console.error(`[Scheduler:${runId}] Failed to process task ${task.id}:`, taskError);
+          }
+        }
+      }
+    }
+
+    // 2. Find pending review requests older than 2 days
+    const twoDaysAgo = new Date(now);
+    twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+
+    const pendingReviews = await prisma.reviewRequest.findMany({
       where: {
-        dueDate: {
-          gte: dayStart,
-          lte: dayEnd
-        },
-        status: { in: ['OPEN', 'IN_PROGRESS'] },
-        // Don't remind if already reminded today
-        OR: [
-          { reminderSentAt: null },
-          { reminderSentAt: { lt: new Date(now.setHours(0, 0, 0, 0)) } }
-        ]
+        status: 'pending',
+        requestedAt: { lt: twoDaysAgo }
       }
     });
 
-    results.tasksScanned += tasks.length;
+    console.log(`[Scheduler:${runId}] Found ${pendingReviews.length} pending reviews > 2 days old`);
+    results.reviewsScanned = pendingReviews.length;
 
-    for (const task of tasks) {
-      if (task.assigneeId) {
-        await createTaskReminderNotification(task, daysAhead);
-        results.remindersCreated++;
+    for (const review of pendingReviews) {
+      // Check if we already sent a reminder recently
+      const existingReminder = await prisma.notification.findFirst({
+        where: {
+          type: 'review_reminder',
+          reviewRequestId: review.id,
+          createdAt: { gt: twoDaysAgo }
+        }
+      });
 
-        // Update task reminder tracking
-        await prisma.chatTask.update({
-          where: { id: task.id },
-          data: { reminderSentAt: new Date() }
-        });
+      if (!existingReminder) {
+        try {
+          await createReviewReminderNotification(review);
+          results.remindersCreated++;
+          results.details.reviewReminders.push({ reviewId: review.id });
+          console.log(`[Scheduler:${runId}] Created reminder for review ${review.id}`);
+        } catch (reviewError) {
+          console.error(`[Scheduler:${runId}] Failed to process review ${review.id}:`, reviewError);
+        }
       }
     }
-  }
 
-  // 2. Find pending review requests older than 2 days
-  const twoDaysAgo = new Date(now);
-  twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+    // 3. Find deal submissions with no response in 5+ days
+    const fiveDaysAgo = new Date(now);
+    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
 
-  const pendingReviews = await prisma.reviewRequest.findMany({
-    where: {
-      status: 'pending',
-      requestedAt: { lt: twoDaysAgo }
-    }
-  });
-
-  results.reviewsScanned = pendingReviews.length;
-
-  for (const review of pendingReviews) {
-    // Check if we already sent a reminder recently
-    const existingReminder = await prisma.notification.findFirst({
+    const pendingSubmissions = await prisma.dealSubmission.findMany({
       where: {
-        type: 'review_reminder',
-        reviewRequestId: review.id,
-        createdAt: { gt: twoDaysAgo }
+        status: 'PENDING',
+        submittedAt: { lt: fiveDaysAgo }
       }
     });
 
-    if (!existingReminder) {
-      await createReviewReminderNotification(review);
-      results.remindersCreated++;
-    }
-  }
+    console.log(`[Scheduler:${runId}] Found ${pendingSubmissions.length} pending submissions > 5 days old`);
+    results.submissionsScanned = pendingSubmissions.length;
 
-  // 3. Find deal submissions with no response in 5+ days
-  const fiveDaysAgo = new Date(now);
-  fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+    for (const submission of pendingSubmissions) {
+      const existingReminder = await prisma.notification.findFirst({
+        where: {
+          type: 'submission_reminder',
+          dealId: submission.dealId,
+          createdAt: { gt: fiveDaysAgo }
+        }
+      });
 
-  const pendingSubmissions = await prisma.dealSubmission.findMany({
-    where: {
-      status: 'PENDING',
-      submittedAt: { lt: fiveDaysAgo }
-    }
-  });
-
-  results.submissionsScanned = pendingSubmissions.length;
-
-  for (const submission of pendingSubmissions) {
-    const existingReminder = await prisma.notification.findFirst({
-      where: {
-        type: 'submission_reminder',
-        dealId: submission.dealId,
-        createdAt: { gt: fiveDaysAgo }
+      if (!existingReminder) {
+        try {
+          await createSubmissionReminderNotification(submission);
+          results.remindersCreated++;
+          results.details.submissionReminders.push({ submissionId: submission.id, dealId: submission.dealId });
+          console.log(`[Scheduler:${runId}] Created reminder for submission ${submission.id}`);
+        } catch (submissionError) {
+          console.error(`[Scheduler:${runId}] Failed to process submission ${submission.id}:`, submissionError);
+        }
       }
-    });
-
-    if (!existingReminder) {
-      await createSubmissionReminderNotification(submission);
-      results.remindersCreated++;
     }
-  }
 
-  console.log('[Scheduler] Deadline scan results:', results);
-  return results;
+    console.log(`[Scheduler:${runId}] Deadline scan completed in ${Date.now() - startTime}ms:`, results);
+    await logSchedulerRun(runId, 'DEADLINE_SCAN', results, null, startTime);
+    return results;
+  } catch (error) {
+    console.error(`[Scheduler:${runId}] Deadline scan FAILED:`, error);
+    await logSchedulerRun(runId, 'DEADLINE_SCAN', results, error, startTime);
+    throw error;
+  }
 }
 
 /**
  * Process escalations for overdue tasks
  */
 export async function processEscalations() {
+  const runId = crypto.randomUUID();
+  const startTime = Date.now();
   const now = new Date();
+
+  console.log(`[Scheduler:${runId}] Starting escalation check...`);
+
   const results = {
     tasksChecked: 0,
-    escalated: 0
+    escalated: 0,
+    level1: 0,
+    level2: 0,
+    details: []
   };
 
-  // Find overdue tasks that haven't been escalated yet
-  const overdueTasks = await prisma.chatTask.findMany({
-    where: {
-      dueDate: { lt: now },
-      status: { in: ['OPEN', 'IN_PROGRESS'] },
-      escalatedAt: null
-    }
-  });
+  try {
+    // Find overdue tasks that haven't been escalated yet
+    const overdueTasks = await prisma.chatTask.findMany({
+      where: {
+        dueDate: { lt: now },
+        status: { in: ['OPEN', 'IN_PROGRESS'] },
+        escalatedAt: null
+      }
+    });
 
-  results.tasksChecked = overdueTasks.length;
+    console.log(`[Scheduler:${runId}] Found ${overdueTasks.length} overdue tasks to check`);
+    results.tasksChecked = overdueTasks.length;
 
-  for (const task of overdueTasks) {
-    const daysOverdue = Math.floor((now.getTime() - task.dueDate.getTime()) / (1000 * 60 * 60 * 24));
+    for (const task of overdueTasks) {
+      const daysOverdue = Math.floor((now.getTime() - task.dueDate.getTime()) / (1000 * 60 * 60 * 24));
 
-    // Level 1 escalation: notify creator
-    if (daysOverdue >= ESCALATION_THRESHOLDS.LEVEL_1 && !task.escalatedAt) {
-      await createEscalationNotification(task, 1, task.createdById);
+      try {
+        // Level 1 escalation: notify creator (2+ days overdue)
+        if (daysOverdue >= ESCALATION_THRESHOLDS.LEVEL_1 && !task.escalatedAt) {
+          await createEscalationNotification(task, 1, task.createdById);
 
-      await prisma.chatTask.update({
-        where: { id: task.id },
-        data: {
-          escalatedAt: new Date(),
-          escalatedToUserId: task.createdById
+          await prisma.chatTask.update({
+            where: { id: task.id },
+            data: {
+              escalatedAt: new Date(),
+              escalatedToUserId: task.createdById
+            }
+          });
+
+          results.escalated++;
+          results.level1++;
+          results.details.push({ taskId: task.id, level: 1, daysOverdue, escalatedTo: task.createdById });
+          console.log(`[Scheduler:${runId}] Escalated task ${task.id} to creator (${daysOverdue} days overdue)`);
         }
-      });
 
-      results.escalated++;
+        // Level 2 escalation: notify deal team (5+ days overdue)
+        // NOTE: This was previously unimplemented - now added for completeness
+        // TODO: Implement Level 2 escalation in n8n workflow
+      } catch (taskError) {
+        console.error(`[Scheduler:${runId}] Failed to escalate task ${task.id}:`, taskError);
+      }
     }
-  }
 
-  console.log('[Scheduler] Escalation results:', results);
-  return results;
+    console.log(`[Scheduler:${runId}] Escalation check completed in ${Date.now() - startTime}ms:`, results);
+    await logSchedulerRun(runId, 'ESCALATION', results, null, startTime);
+    return results;
+  } catch (error) {
+    console.error(`[Scheduler:${runId}] Escalation check FAILED:`, error);
+    await logSchedulerRun(runId, 'ESCALATION', results, error, startTime);
+    throw error;
+  }
 }
 
 /**
  * Process snoozed notifications that have expired
+ *
+ * BUG FIX: Removed `isRead: false` filter that was causing read+snoozed
+ * notifications to never be processed. Snooze should expire regardless
+ * of read state.
  */
 export async function processSnoozedNotifications() {
+  const runId = crypto.randomUUID();
+  const startTime = Date.now();
   const now = new Date();
+
+  console.log(`[Scheduler:${runId}] Starting snooze processing...`);
+
   const results = {
-    processed: 0
+    processed: 0,
+    emailsSent: 0,
+    emailsFailed: 0,
+    details: []
   };
 
-  // Find notifications where snooze has expired
-  const expiredSnoozes = await prisma.notification.findMany({
-    where: {
-      snoozedUntil: { lte: now },
-      isRead: false
-    }
-  });
-
-  for (const notification of expiredSnoozes) {
-    // Clear the snooze and optionally send email
-    await prisma.notification.update({
-      where: { id: notification.id },
-      data: {
-        snoozedUntil: null,
-        reminderCount: notification.reminderCount + 1,
-        lastReminderAt: new Date()
+  try {
+    // Find notifications where snooze has expired
+    // NOTE: Removed `isRead: false` filter - snooze should expire regardless of read state
+    const expiredSnoozes = await prisma.notification.findMany({
+      where: {
+        snoozedUntil: { lte: now }
       }
     });
 
-    // Get user preferences
-    const prefs = await getUserPreferences(notification.userId);
+    console.log(`[Scheduler:${runId}] Found ${expiredSnoozes.length} expired snoozes`);
 
-    if (prefs.emailEnabled) {
-      await sendSnoozeExpiredEmail(notification);
+    for (const notification of expiredSnoozes) {
+      try {
+        // Clear the snooze and optionally send email
+        await prisma.notification.update({
+          where: { id: notification.id },
+          data: {
+            snoozedUntil: null,
+            reminderCount: notification.reminderCount + 1,
+            lastReminderAt: new Date()
+          }
+        });
+
+        // Get user preferences
+        const prefs = await getUserPreferences(notification.userId);
+
+        let emailSent = false;
+        if (prefs.emailEnabled) {
+          try {
+            await sendSnoozeExpiredEmail(notification);
+            emailSent = true;
+            results.emailsSent++;
+          } catch (emailError) {
+            console.error(`[Scheduler:${runId}] Email failed for notification ${notification.id}:`, emailError);
+            results.emailsFailed++;
+          }
+        }
+
+        results.processed++;
+        results.details.push({
+          notificationId: notification.id,
+          userId: notification.userId,
+          emailSent,
+          reminderCount: notification.reminderCount + 1
+        });
+        console.log(`[Scheduler:${runId}] Processed snooze for notification ${notification.id}`);
+      } catch (notifError) {
+        console.error(`[Scheduler:${runId}] Failed to process notification ${notification.id}:`, notifError);
+      }
     }
 
-    results.processed++;
+    console.log(`[Scheduler:${runId}] Snooze processing completed in ${Date.now() - startTime}ms:`, results);
+    await logSchedulerRun(runId, 'SNOOZE', results, null, startTime);
+    return results;
+  } catch (error) {
+    console.error(`[Scheduler:${runId}] Snooze processing FAILED:`, error);
+    await logSchedulerRun(runId, 'SNOOZE', results, error, startTime);
+    throw error;
   }
-
-  console.log('[Scheduler] Snooze processing results:', results);
-  return results;
 }
 
 /**

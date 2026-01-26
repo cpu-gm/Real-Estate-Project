@@ -7,11 +7,65 @@
 
 import { getPrisma } from "../db.js";
 import { extractAuthUser } from "./auth.js";
+import { logPermissionAction, AUDIT_ACTIONS } from "../middleware/auth.js";
 import { readStore } from "../store.js";
 import crypto from "node:crypto";
 import { createDealEvent, createDistributionSnapshot } from "../services/audit-service.js";
 import { calculateWaterfall, groupLPsByClassPriority } from "../services/waterfall-calculator.js";
 import { generateDistributionStatements } from "../services/document-generator.js";
+import { emitLpWebhook } from "../notifications.js";
+import { getLPPositionsForWaterfall } from "../services/lp-position-service.js";
+import { createIntegrityLogger, INTEGRITY_OPERATIONS, INVARIANTS } from "../services/integrity-logger.js";
+import { dollarsToCents, allocateCents, validateAllocationSum } from "../services/money.js";
+import { addToOutbox } from "../services/outbox-worker.js";
+import {
+  CreateDistributionSchema,
+  MarkDistributionPaidSchema
+} from "../middleware/route-schemas.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+import { getIdempotencyStats } from "../middleware/idempotency.js";
+
+/**
+ * Get distributions summary across all deals for GP's organization
+ * GET /api/distributions/summary
+ */
+export async function handleDistributionsSummary(req, res, authUser) {
+  if (!authUser) {
+    sendError(res, 401, "Not authenticated");
+    return;
+  }
+
+  const prisma = getPrisma();
+
+  try {
+    // Get all distributions for deals in the user's organization
+    const distributions = await prisma.distribution.findMany({
+      where: {
+        deal: {
+          organizationId: authUser.organizationId
+        }
+      }
+    });
+
+    // Calculate summary stats
+    const totalDistributed = distributions
+      .filter(d => d.status === 'PAID')
+      .reduce((sum, d) => sum + d.totalAmount, 0);
+
+    const pendingDistributions = distributions.filter(
+      d => d.status !== 'PAID' && d.status !== 'CANCELLED'
+    ).length;
+
+    sendJson(res, 200, {
+      totalDistributed,
+      pendingDistributions,
+      totalDistributions: distributions.length
+    });
+  } catch (error) {
+    console.error('[Distributions] Summary error:', error);
+    sendError(res, 500, "Failed to get distributions summary");
+  }
+}
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -134,10 +188,24 @@ export async function handleGetDistribution(req, res, dealId, distributionId) {
 
   const prisma = getPrisma();
 
+  // FIX: N+1 Query - eager load LP actor with share class in single query
   const distribution = await prisma.distribution.findFirst({
     where: { id: distributionId, dealId },
     include: {
-      allocations: true
+      allocations: {
+        include: {
+          lpActor: {
+            select: {
+              id: true,
+              entityName: true,
+              email: true,
+              commitment: true,
+              ownershipPct: true,
+              shareClass: { select: { id: true, code: true, name: true } }
+            }
+          }
+        }
+      }
     }
   });
 
@@ -145,36 +213,21 @@ export async function handleGetDistribution(req, res, dealId, distributionId) {
     return sendError(res, 404, "Distribution not found");
   }
 
-  // Get LP actor details for each allocation (including share class)
-  const allocationsWithLP = await Promise.all(
-    distribution.allocations.map(async (alloc) => {
-      const lpActor = await prisma.lPActor.findUnique({
-        where: { id: alloc.lpActorId },
-        select: {
-          id: true,
-          entityName: true,
-          email: true,
-          commitment: true,
-          ownershipPct: true,
-          shareClass: { select: { id: true, code: true, name: true } }
-        }
-      });
-      return {
-        id: alloc.id,
-        lpActorId: alloc.lpActorId,
-        lpEntityName: lpActor?.entityName || 'Unknown',
-        lpEmail: lpActor?.email || '',
-        shareClass: lpActor?.shareClass || null,  // NEW: Include share class info
-        grossAmount: alloc.grossAmount,
-        withholdingAmount: alloc.withholdingAmount,
-        netAmount: alloc.netAmount,
-        paymentMethod: alloc.paymentMethod,
-        status: alloc.status,
-        paidAt: alloc.paidAt?.toISOString(),
-        confirmationRef: alloc.confirmationRef
-      };
-    })
-  );
+  // Map allocations (no additional queries needed!)
+  const allocationsWithLP = distribution.allocations.map((alloc) => ({
+    id: alloc.id,
+    lpActorId: alloc.lpActorId,
+    lpEntityName: alloc.lpActor?.entityName || 'Unknown',
+    lpEmail: alloc.lpActor?.email || '',
+    shareClass: alloc.lpActor?.shareClass || null,
+    grossAmount: alloc.grossAmount,
+    withholdingAmount: alloc.withholdingAmount,
+    netAmount: alloc.netAmount,
+    paymentMethod: alloc.paymentMethod,
+    status: alloc.status,
+    paidAt: alloc.paidAt?.toISOString(),
+    confirmationRef: alloc.confirmationRef
+  }));
 
   sendJson(res, 200, {
     distribution: {
@@ -215,20 +268,73 @@ export async function handleGetDistribution(req, res, dealId, distributionId) {
  * - Respects share class priority (senior classes paid before junior)
  * - Integrates with underwriting cash flow projections when available
  */
+/**
+ * Create a distribution (GP only)
+ * POST /api/deals/:dealId/distributions
+ *
+ * Sprint 2: Supports Idempotency-Key header for duplicate prevention
+ * - If Idempotency-Key is provided and matches a previous request, returns cached result
+ * - Idempotency keys are scoped to: organization + dealId + key + payload hash
+ */
 export async function handleCreateDistribution(req, res, dealId, readJsonBody, userId, userName) {
   const authUser = await requireGP(req, res);
   if (!authUser) return;
 
-  const body = await readJsonBody(req);
+  // Sprint 2: Check for idempotency key
+  const idempotencyKey = req.headers['idempotency-key'] || req.headers['x-idempotency-key'];
 
-  if (!body?.title || !body?.totalAmount || !body?.distributionDate) {
-    return sendError(res, 400, "title, totalAmount, and distributionDate are required");
+  const validationLog = createValidationLogger('handleCreateDistribution');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
+
+  // Sprint 2: Check for existing distribution with same idempotency key
+  if (idempotencyKey) {
+    const prisma = getPrisma();
+    const existingDist = await prisma.distribution.findFirst({
+      where: {
+        idempotencyKey,
+        dealId,
+        deal: { organizationId: authUser.organizationId }
+      },
+      include: { allocations: true }
+    });
+
+    if (existingDist) {
+      console.log(`[Distributions] Idempotency cache hit for key ${idempotencyKey}`);
+      return sendJson(res, 200, {
+        distribution: {
+          id: existingDist.id,
+          dealId: existingDist.dealId,
+          title: existingDist.title,
+          totalAmount: existingDist.totalAmount,
+          distributionDate: existingDist.distributionDate.toISOString(),
+          status: existingDist.status,
+          allocationCount: existingDist.allocations.length,
+          snapshotId: existingDist.snapshotId
+        },
+        _idempotent: true
+      });
+    }
   }
+
+  // Validate with Zod schema
+  const parseResult = CreateDistributionSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
+  }
+
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
 
   const prisma = getPrisma();
 
-  // Verify deal exists
-  const deal = await prisma.deal.findUnique({ where: { id: dealId } });
+  // Verify deal exists (deals are stored in store.json, not Prisma)
+  const store = await readStore();
+  const deal = store.dealIndex.find((item) => item.id === dealId);
   if (!deal) {
     return sendError(res, 404, "Deal not found");
   }
@@ -295,16 +401,15 @@ export async function handleCreateDistribution(req, res, dealId, readJsonBody, u
     // ==========================================================================
     console.log(`[Distributions] Using waterfall-based allocation with per-class terms`);
 
-    // Transform LP actors to format expected by groupLPsByClassPriority
-    const lpOwnership = lpActors.map(lp => ({
-      lpActorId: lp.id,
-      entityName: lp.entityName,
-      ownershipPct: lp.ownershipPct || 0,
-      commitment: lp.commitment || 0,
-      capitalContributed: lp.capitalContributed || 0,
-      capitalRemaining: lp.capitalRemaining || 0,
-      shareClass: lp.shareClass
-    }));
+    // FIXED: Use LP Position Service to get ACTUAL capitalContributed/capitalRemaining
+    // Previously used lp.capitalContributed which was undefined (field doesn't exist in schema)
+    // This caused all preferred return calculations to be $0
+    const lpOwnership = await getLPPositionsForWaterfall(dealId);
+    console.log(`[Distributions] LP positions for waterfall:`, JSON.stringify(lpOwnership.map(lp => ({
+      lpActorId: lp.lpActorId,
+      capitalContributed: lp.capitalContributed,
+      capitalRemaining: lp.capitalRemaining
+    }))));
 
     // Group LPs by class priority
     const perClassConfig = groupLPsByClassPriority(lpOwnership);
@@ -487,27 +592,74 @@ export async function handleCreateDistribution(req, res, dealId, readJsonBody, u
     console.log(`[Distributions] Rounding adjustment: ${roundingDiff} added to LP ${largest.lpActorId}`);
   }
 
-  // Create distribution record
-  const distribution = await prisma.distribution.create({
-    data: {
-      id: crypto.randomUUID(),
-      dealId,
-      title: body.title,
-      description: body.description || null,
-      totalAmount: body.totalAmount,
-      distributionDate: new Date(body.distributionDate),
-      period: body.period || null,
-      type: body.type || 'CASH_DISTRIBUTION',
-      status: 'DRAFT',
-      createdBy: userId,
-      createdByName: userName || 'Unknown'
-    }
+  // Create integrity logger for database operations
+  const logger = createIntegrityLogger({
+    operation: INTEGRITY_OPERATIONS.DISTRIBUTION_CREATE,
+    dealId,
+    userId: userId,
+    requestId: req.headers?.['x-request-id']
   });
 
-  // Create allocations in database
-  const allocations = await Promise.all(
-    lpAllocations.map(async (alloc) => {
-      return prisma.distributionAllocation.create({
+  logger.info('Creating distribution', {
+    title: body.title,
+    totalAmount: body.totalAmount,
+    allocationMethod: waterfallMode ? 'WATERFALL' : 'PRO_RATA',
+    allocationCount: lpAllocations.length
+  });
+
+  logger.beforeState('lpAllocations', lpAllocations.map(a => ({
+    lpActorId: a.lpActorId,
+    grossAmount: a.grossAmount,
+    allocationMethod: a.allocationMethod
+  })));
+
+  // Validate allocation sum using cents-based validation
+  const totalCents = dollarsToCents(body.totalAmount);
+  const allocCents = lpAllocations.map(a => ({ cents: dollarsToCents(a.grossAmount) }));
+  const sumValidation = validateAllocationSum(allocCents, totalCents);
+
+  // Allow small tolerance for waterfall rounding (up to 1 cent per allocation)
+  const tolerance = lpAllocations.length;  // 1 cent per LP max
+  const sumValid = logger.invariantCheck(
+    INVARIANTS.ALLOCATION_SUM_EQUALS_TOTAL,
+    Math.abs(sumValidation.diff) <= tolerance,
+    { sum: sumValidation.sum, expected: totalCents, diff: sumValidation.diff, tolerance }
+  );
+
+  if (!sumValid) {
+    logger.critical('Allocation sum outside tolerance - check waterfall calculation', sumValidation);
+    await logger.flush();
+    return sendError(res, 500, "Internal error: allocation calculation produced invalid sum");
+  }
+
+  // ATOMIC TRANSACTION - distribution + allocations created together
+  const result = await prisma.$transaction(async (tx) => {
+    logger.info('Starting transaction');
+
+    // 1. Create distribution record
+    const distribution = await tx.distribution.create({
+      data: {
+        id: crypto.randomUUID(),
+        dealId,
+        title: body.title,
+        description: body.description || null,
+        totalAmount: body.totalAmount,
+        distributionDate: new Date(body.distributionDate),
+        period: body.period || null,
+        type: body.type || 'CASH_DISTRIBUTION',
+        status: 'DRAFT',
+        idempotencyKey: idempotencyKey || null, // Sprint 2: Store idempotency key
+        createdBy: userId,
+        createdByName: userName || 'Unknown'
+      }
+    });
+
+    logger.info('Created distribution', { distributionId: distribution.id });
+
+    // 2. Create allocations in database
+    const createdAllocations = [];
+    for (const alloc of lpAllocations) {
+      const allocation = await tx.distributionAllocation.create({
         data: {
           id: crypto.randomUUID(),
           distributionId: distribution.id,
@@ -519,8 +671,42 @@ export async function handleCreateDistribution(req, res, dealId, readJsonBody, u
           status: 'PENDING'
         }
       });
-    })
-  );
+
+      createdAllocations.push(allocation);
+
+      logger.debug('Created allocation', {
+        allocationId: allocation.id,
+        lpActorId: alloc.lpActorId,
+        grossAmount: alloc.grossAmount
+      });
+    }
+
+    // 3. Verify final state inside transaction
+    const verifyAllocations = await tx.distributionAllocation.findMany({
+      where: { distributionId: distribution.id }
+    });
+
+    const verifySum = verifyAllocations.reduce((sum, a) => sum + a.grossAmount, 0);
+    const verifyDiff = Math.abs(verifySum - body.totalAmount);
+
+    logger.invariantCheck(
+      'FINAL_DISTRIBUTION_SUM_MATCHES',
+      verifyDiff < 0.01 * lpAllocations.length,  // Allow 1 cent per LP
+      { verifySum, expectedTotal: body.totalAmount, diff: verifyDiff }
+    );
+
+    logger.info('Transaction complete', {
+      distributionId: distribution.id,
+      allocationCount: createdAllocations.length
+    });
+
+    return { distribution, allocations: createdAllocations };
+  });
+
+  const distribution = result.distribution;
+  const allocations = result.allocations;
+
+  // Operations AFTER transaction succeeds (non-critical)
 
   // Create snapshot of cap table AND waterfall rules for reproducibility
   const snapshot = await createDistributionSnapshot(
@@ -534,6 +720,15 @@ export async function handleCreateDistribution(req, res, dealId, readJsonBody, u
     where: { id: distribution.id },
     data: { snapshotId: snapshot.id }
   });
+
+  logger.afterState('result', {
+    distributionId: distribution.id,
+    allocationCount: allocations.length,
+    totalAmount: distribution.totalAmount,
+    snapshotId: snapshot.id
+  });
+
+  await logger.flush();
 
   // Record audit event with allocation method details
   await createDealEvent(dealId, 'DISTRIBUTION_CREATED', {
@@ -559,6 +754,22 @@ export async function handleCreateDistribution(req, res, dealId, readJsonBody, u
       allocationMethod: a.allocationMethod
     }))
   }, { id: userId, name: userName, role: 'GP' });
+
+  // Audit log with AUDIT_ACTIONS
+  await logPermissionAction({
+    actorId: userId,
+    action: AUDIT_ACTIONS.DISTRIBUTION_CREATED,
+    resourceType: 'Distribution',
+    resourceId: distribution.id,
+    afterValue: {
+      totalAmount: distribution.totalAmount,
+      status: distribution.status,
+      allocationCount: allocations.length,
+      method: waterfallMode ? 'WATERFALL' : 'PRO_RATA'
+    },
+    metadata: { dealId, title: distribution.title },
+    ipAddress: req.headers['x-forwarded-for'] || req.socket?.remoteAddress
+  });
 
   console.log(`[Distributions] Created distribution ${distribution.id} for deal ${dealId} with ${allocations.length} allocations (method: ${waterfallMode ? 'WATERFALL' : 'PRO_RATA'}, snapshot: ${snapshot.id})`);
 
@@ -649,6 +860,42 @@ export async function handleApproveDistribution(req, res, dealId, distributionId
 
   console.log(`[Distributions] Approved distribution ${distributionId} by ${authUser.name}`);
 
+  // Fetch allocations with LP details for webhook
+  const allocations = await prisma.distributionAllocation.findMany({
+    where: { distributionId },
+    include: {
+      lpActor: {
+        select: {
+          id: true,
+          entityName: true,
+          email: true
+        }
+      }
+    }
+  });
+
+  // Emit webhook for n8n to send LP notifications
+  await emitLpWebhook("DISTRIBUTION_APPROVED", {
+    dealId,
+    distributionId,
+    distributionTitle: distribution.title,
+    totalAmount: distribution.totalAmount,
+    distributionDate: distribution.distributionDate?.toISOString(),
+    period: distribution.period,
+    type: distribution.type,
+    approvedBy: authUser.name || 'Unknown',
+    approvedAt: updated.approvedAt.toISOString(),
+    allocations: allocations.map(a => ({
+      allocationId: a.id,
+      lpActorId: a.lpActor.id,
+      lpEntityName: a.lpActor.entityName,
+      lpEmail: a.lpActor.email,
+      grossAmount: a.grossAmount,
+      withholdingAmount: a.withholdingAmount,
+      netAmount: a.netAmount
+    }))
+  });
+
   sendJson(res, 200, {
     distribution: {
       id: updated.id,
@@ -724,6 +971,22 @@ export async function handleProcessDistribution(req, res, dealId, distributionId
     processedByName: authUser.name
   }, { id: authUser.id, name: authUser.name, role: authUser.role });
 
+  // Audit log with AUDIT_ACTIONS
+  await logPermissionAction({
+    actorId: authUser.id,
+    action: AUDIT_ACTIONS.DISTRIBUTION_APPROVED,
+    resourceType: 'Distribution',
+    resourceId: distributionId,
+    beforeValue: { status: 'PENDING' },
+    afterValue: {
+      status: 'PROCESSING',
+      totalAmount: distribution.totalAmount,
+      allocationCount: allAllocations.length
+    },
+    metadata: { dealId, title: distribution.title },
+    ipAddress: req.headers['x-forwarded-for'] || req.socket?.remoteAddress
+  });
+
   console.log(`[Distributions] Started processing distribution ${distributionId}`);
 
   sendJson(res, 200, {
@@ -743,7 +1006,23 @@ export async function handleMarkDistributionPaid(req, res, dealId, distributionI
   const authUser = await requireGP(req, res);
   if (!authUser) return;
 
-  const body = await readJsonBody(req);
+  const validationLog = createValidationLogger('handleMarkDistributionPaid');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
+
+  // Validate with Zod schema
+  const parseResult = MarkDistributionPaidSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
+  }
+
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
+
   const prisma = getPrisma();
 
   const allocation = await prisma.distributionAllocation.findFirst({
@@ -789,7 +1068,7 @@ export async function handleMarkDistributionPaid(req, res, dealId, distributionI
         dealId,
         distributionId,
         allocationId,
-        paidAmount: allocation.amount,
+        paidAmount: allocation.netAmount,
         confirmationRef: body?.confirmationRef || null
       }),
       ipAddress: req.headers["x-forwarded-for"] || req.socket?.remoteAddress || null
@@ -797,6 +1076,27 @@ export async function handleMarkDistributionPaid(req, res, dealId, distributionI
   });
 
   console.log(`[Distributions] Marked allocation ${allocationId} as paid`);
+
+  // Fetch LP details for webhook
+  const lpActor = await prisma.lPActor.findUnique({
+    where: { id: allocation.lpActorId },
+    select: { id: true, entityName: true, email: true }
+  });
+
+  // Emit webhook for n8n to send payment confirmation email
+  await emitLpWebhook("ALLOCATION_PAID", {
+    dealId,
+    distributionId,
+    allocationId,
+    lpActorId: lpActor?.id,
+    lpEntityName: lpActor?.entityName,
+    lpEmail: lpActor?.email,
+    grossAmount: allocation.grossAmount,
+    netAmount: allocation.netAmount,
+    paidAt: updated.paidAt.toISOString(),
+    confirmationRef: updated.confirmationRef,
+    allDistributionsPaid: allPaid
+  });
 
   sendJson(res, 200, {
     allocation: {

@@ -234,3 +234,192 @@ If you have questions, please contact the submitter directly.
     }
   });
 }
+
+/**
+ * Send broker notification email when buyer expresses interest
+ */
+export async function sendBrokerInquiryNotification({
+  toEmail,
+  brokerName,
+  propertyName,
+  buyerName,
+  buyerFirm,
+  buyerEmail,
+  responseType,
+  questionsCount,
+  dealDraftId
+}) {
+  const hasQuestions = questionsCount > 0;
+  const subject = hasQuestions
+    ? `New Inquiry: ${buyerName} has questions about ${propertyName || 'your listing'}`
+    : `New Interest: ${buyerName} is interested in ${propertyName || 'your listing'}`;
+
+  const viewUrl = `${PUBLIC_BASE_URL}/broker/deal/${dealDraftId}?tab=buyers`;
+
+  const responseLabel = responseType === 'INTERESTED_WITH_CONDITIONS'
+    ? 'interested with conditions'
+    : 'interested';
+
+  const textBody = `
+Hello${brokerName ? ` ${brokerName}` : ''},
+
+A buyer has expressed interest in your listing.
+
+Property: ${propertyName || 'Your Listing'}
+Buyer: ${buyerName}${buyerFirm ? ` (${buyerFirm})` : ''}
+Email: ${buyerEmail}
+Response: ${responseLabel}${hasQuestions ? `\nQuestions: ${questionsCount} question(s) for you to answer` : ''}
+
+View and respond in the platform:
+${viewUrl}
+
+This is an automated notification from Canonical Deal OS.
+`;
+
+  const htmlBody = `
+<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+  <h2 style="color: #171717;">${hasQuestions ? 'New Buyer Inquiry' : 'New Interested Buyer'}</h2>
+
+  <p>Hello${brokerName ? ` ${brokerName}` : ''},</p>
+
+  <p>A buyer has expressed interest in your listing.</p>
+
+  <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 16px 0;">
+    <p><strong>Property:</strong> ${propertyName || 'Your Listing'}</p>
+    <p><strong>Buyer:</strong> ${buyerName}${buyerFirm ? ` (${buyerFirm})` : ''}</p>
+    <p><strong>Email:</strong> <a href="mailto:${buyerEmail}">${buyerEmail}</a></p>
+    <p><strong>Response:</strong> ${responseLabel}</p>
+    ${hasQuestions
+      ? `<p style="color: #2563eb;"><strong>📝 ${questionsCount} question(s)</strong> awaiting your response</p>`
+      : ''
+    }
+  </div>
+
+  <p>
+    <a href="${viewUrl}" style="display: inline-block; background: ${hasQuestions ? '#2563eb' : '#16a34a'}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px;">
+      ${hasQuestions ? 'View & Respond' : 'View Buyer Details'}
+    </a>
+  </p>
+
+  <p style="color: #737373; font-size: 12px; margin-top: 32px;">
+    This is an automated notification from Canonical Deal OS.
+  </p>
+</div>
+`;
+
+  return sendEmail({
+    to: toEmail,
+    subject,
+    text: textBody,
+    html: htmlBody,
+    metadata: {
+      event: 'BROKER_NEW_INQUIRY',
+      dealDraftId,
+      buyerEmail,
+      responseType,
+      hasQuestions
+    }
+  });
+}
+
+/**
+ * Send shared space invitation email
+ */
+export async function sendSharedSpaceInvitation({
+  recipientEmail,
+  recipientName,
+  spaceName,
+  inviterName,
+  organizationName,
+  accessUrl,
+  expiresAt,
+  message
+}) {
+  const subject = `Invitation: ${spaceName} - Shared Legal Workspace`;
+
+  const expirationText = expiresAt
+    ? `This invitation expires on ${new Date(expiresAt).toLocaleDateString()}.`
+    : 'This invitation does not expire.';
+
+  const textBody = `
+You've been invited to collaborate on a shared legal workspace
+
+Hello ${recipientName},
+
+${inviterName} from ${organizationName} has invited you to collaborate on a shared legal workspace:
+
+Workspace: ${spaceName}
+
+${message ? `Message from ${inviterName}:\n"${message}"\n\n` : ''}
+You can access the workspace, view documents, and participate in discussions at:
+
+${accessUrl}
+
+${expirationText}
+
+This is a secure workspace for legal collaboration. You can view documents, send messages, and collaborate with other members.
+
+Questions? Reply to this email.
+
+---
+Canonical Deal OS
+`.trim();
+
+  const htmlBody = `
+<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+  <h2 style="color: #171717;">🔒 Shared Legal Workspace Invitation</h2>
+
+  <p>Hello ${recipientName},</p>
+
+  <p><strong>${inviterName}</strong> from ${organizationName} has invited you to collaborate on a shared legal workspace:</p>
+
+  <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin: 16px 0;">
+    <p><strong>Workspace:</strong> ${spaceName}</p>
+    <p><strong>Invited by:</strong> ${inviterName}</p>
+    <p><strong>Organization:</strong> ${organizationName}</p>
+  </div>
+
+  ${message
+    ? `<div style="background: #eff6ff; border-left: 4px solid #2563eb; padding: 12px 16px; margin: 16px 0;">
+        <p style="margin: 0; color: #1e3a8a;"><strong>Message from ${inviterName}:</strong></p>
+        <p style="margin: 8px 0 0 0; color: #1e40af;">"${message}"</p>
+      </div>`
+    : ''
+  }
+
+  <p>You can access the workspace to view documents, send messages, and collaborate with other members:</p>
+
+  <p>
+    <a href="${accessUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px;">
+      Access Workspace
+    </a>
+  </p>
+
+  <p style="color: #737373; font-size: 14px;">
+    ${expirationText}
+  </p>
+
+  <p style="color: #737373; font-size: 12px; margin-top: 32px;">
+    This is a secure workspace for legal collaboration. Questions? Reply to this email.
+  </p>
+
+  <p style="color: #737373; font-size: 12px;">
+    Canonical Deal OS
+  </p>
+</div>
+`;
+
+  return sendEmail({
+    to: recipientEmail,
+    subject,
+    text: textBody,
+    html: htmlBody,
+    metadata: {
+      event: 'SHARED_SPACE_INVITATION',
+      spaceName,
+      inviterName,
+      organizationName,
+      expiresAt
+    }
+  });
+}

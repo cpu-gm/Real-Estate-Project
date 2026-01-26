@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+// Import migrated schemas so they can be used in this file AND re-exported
+import { explainBlockSchema as _explainBlockSchema, explainReasonSchema as _explainReasonSchema } from '../contracts/http/explain.schema.js';
+import { createDealRequestSchema as _createDealRequestSchema } from '../contracts/http/deals.schema.js';
+
 export const actionTypeSchema = z.enum([
   "OPEN_REVIEW",
   "APPROVE_DEAL",
@@ -165,27 +169,10 @@ export const dealRecordsResponseSchema = z.object({
 
 export const eventsResponseSchema = z.array(dealEventSchema);
 
-export const explainReasonSchema = z.object({
-  type: z.string(),
-  message: z.string(),
-  materialType: z.string().nullable().optional(),
-  requiredTruth: z.string().nullable().optional(),
-  currentTruth: z.string().nullable().optional(),
-  satisfiedByOverride: z.boolean().optional()
-});
-
-export const explainBlockSchema = z.object({
-  action: z.string(),
-  status: z.literal("BLOCKED"),
-  reasons: z.array(explainReasonSchema),
-  nextSteps: z.array(
-    z.object({
-      description: z.string(),
-      canBeFixedByRoles: z.array(z.string()),
-      canBeOverriddenByRoles: z.array(z.string())
-    })
-  )
-}).passthrough();
+// MIGRATED: explainReasonSchema and explainBlockSchema moved to ../contracts/http/explain.schema.js
+// Re-exported here for backward compatibility (using imported values so they're usable in this file)
+export const explainBlockSchema = _explainBlockSchema;
+export const explainReasonSchema = _explainReasonSchema;
 
 export const explainAllowedSchema = z
   .object({
@@ -212,11 +199,9 @@ export const actionResponseSchema = z.object({
   appendedEventId: z.string().nullable().optional()
 });
 
-export const createDealRequestSchema = z.object({
-  name: z.string().min(1),
-  profile: dealProfileSchema.optional(),
-  sessionId: z.string().optional()
-});
+// MIGRATED: createDealRequestSchema moved to ../contracts/http/deals.schema.js
+// Re-exported here for backward compatibility
+export const createDealRequestSchema = _createDealRequestSchema;
 
 export const llmDealParseRequestSchema = z.object({
   inputText: z.string().min(1),
@@ -473,3 +458,311 @@ export function verifyExplainBlockKeys(explain) {
   );
   return { ok: missing.length === 0, missing };
 }
+
+// ============================================================================
+// Contact/Vendor Database Schemas
+// ============================================================================
+
+export const contactTypeSchema = z.enum([
+  'BROKER',
+  'LENDER',
+  'ATTORNEY',
+  'TITLE_COMPANY',
+  'APPRAISER',
+  'INSPECTOR',
+  'ENVIRONMENTAL',
+  'PROPERTY_MANAGER',
+  'ESCROW_AGENT',
+  'INSURANCE_AGENT',
+  'TAX_ADVISOR',
+  'CONTRACTOR',
+  'INVESTOR',
+  'OTHER'
+]);
+
+export const contactStatusSchema = z.enum(['ACTIVE', 'INACTIVE', 'ARCHIVED']);
+export const credentialTypeSchema = z.enum(['LICENSE', 'CERTIFICATION', 'INSURANCE', 'BOND']);
+export const credentialStatusSchema = z.enum(['ACTIVE', 'EXPIRED', 'EXPIRING_SOON', 'PENDING']);
+export const dealContactStatusSchema = z.enum(['ACTIVE', 'COMPLETED', 'CANCELLED']);
+export const feeTypeSchema = z.enum(['FLAT', 'PERCENTAGE', 'HOURLY']);
+export const activityTypeSchema = z.enum([
+  'EMAIL_SENT', 'EMAIL_RECEIVED', 'CALL', 'MEETING',
+  'NOTE', 'DOCUMENT_SHARED', 'PORTAL_ACCESS', 'DEAL_ASSIGNED'
+]);
+export const preferredMethodSchema = z.enum(['EMAIL', 'PHONE', 'TEXT']);
+
+// Type-specific fields stored as JSON
+export const brokerTypeFieldsSchema = z.object({
+  licenseNo: z.string().nullable().optional(),
+  licenseState: z.string().nullable().optional(),
+  licenseExpiry: z.string().nullable().optional(),
+  mlsId: z.string().nullable().optional(),
+  brokerageAffiliation: z.string().nullable().optional()
+}).passthrough();
+
+export const lenderTypeFieldsSchema = z.object({
+  nmlsId: z.string().nullable().optional(),
+  loanTypes: z.array(z.string()).nullable().optional(),
+  typicalTerms: z.string().nullable().optional(),
+  minLoanSize: z.number().nullable().optional(),
+  maxLoanSize: z.number().nullable().optional()
+}).passthrough();
+
+export const attorneyTypeFieldsSchema = z.object({
+  barNumber: z.string().nullable().optional(),
+  barStates: z.array(z.string()).nullable().optional(),
+  specialties: z.array(z.string()).nullable().optional()
+}).passthrough();
+
+export const appraiserTypeFieldsSchema = z.object({
+  licenseNo: z.string().nullable().optional(),
+  licenseState: z.string().nullable().optional(),
+  certifications: z.array(z.string()).nullable().optional()
+}).passthrough();
+
+// Generic type fields schema that allows any type-specific data
+export const typeFieldsSchema = z.union([
+  brokerTypeFieldsSchema,
+  lenderTypeFieldsSchema,
+  attorneyTypeFieldsSchema,
+  appraiserTypeFieldsSchema,
+  z.record(z.unknown())
+]).nullable().optional();
+
+// Contact credential schema
+export const contactCredentialSchema = z.object({
+  id: z.string(),
+  contactId: z.string(),
+  credentialType: credentialTypeSchema,
+  credentialName: z.string(),
+  issuingAuthority: z.string().nullable().optional(),
+  credentialNumber: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  jurisdiction: z.string().nullable().optional(),
+  issuedDate: z.string().nullable().optional(),
+  expirationDate: z.string().nullable().optional(),
+  status: credentialStatusSchema,
+  documentId: z.string().nullable().optional(),
+  verifiedAt: z.string().nullable().optional(),
+  verifiedBy: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+// Main contact schema
+export const contactSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  contactType: contactTypeSchema,
+  isPerson: z.boolean(),
+  name: z.string(),
+  companyName: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  email: z.string().nullable().optional(),
+  phone: z.string().nullable().optional(),
+  phoneAlt: z.string().nullable().optional(),
+  address: z.string().nullable().optional(), // JSON string
+  website: z.string().nullable().optional(),
+  authUserId: z.string().nullable().optional(),
+  canSelfEdit: z.boolean(),
+  status: contactStatusSchema,
+  isOrgPreferred: z.boolean(),
+  notes: z.string().nullable().optional(),
+  tags: z.string().nullable().optional(), // JSON array string
+  preferredMethod: preferredMethodSchema.nullable().optional(),
+  typeFields: z.string().nullable().optional(), // JSON string
+  dealCount: z.number(),
+  avgRating: z.number().nullable().optional(),
+  lastUsedAt: z.string().nullable().optional(),
+  createdBy: z.string(),
+  createdByName: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  // Relations (optional, included when fetched with includes)
+  credentials: z.array(contactCredentialSchema).optional(),
+  isFavorite: z.boolean().optional() // Added by API when user favorites are joined
+});
+
+// Contact list response
+export const contactListResponseSchema = z.object({
+  contacts: z.array(contactSchema),
+  total: z.number(),
+  page: z.number(),
+  limit: z.number()
+});
+
+// Create contact request
+export const createContactRequestSchema = z.object({
+  contactType: contactTypeSchema,
+  isPerson: z.boolean().default(true),
+  name: z.string().min(1),
+  companyName: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  email: z.string().email().nullable().optional(),
+  phone: z.string().nullable().optional(),
+  phoneAlt: z.string().nullable().optional(),
+  address: z.string().nullable().optional(),
+  website: z.string().url().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  tags: z.array(z.string()).nullable().optional(),
+  preferredMethod: preferredMethodSchema.nullable().optional(),
+  typeFields: z.record(z.unknown()).nullable().optional(),
+  isOrgPreferred: z.boolean().optional()
+});
+
+// Update contact request
+export const updateContactRequestSchema = createContactRequestSchema.partial().extend({
+  status: contactStatusSchema.optional(),
+  canSelfEdit: z.boolean().optional()
+});
+
+// Add credential request
+export const addCredentialRequestSchema = z.object({
+  credentialType: credentialTypeSchema,
+  credentialName: z.string().min(1),
+  issuingAuthority: z.string().nullable().optional(),
+  credentialNumber: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  jurisdiction: z.string().nullable().optional(),
+  issuedDate: z.string().nullable().optional(),
+  expirationDate: z.string().nullable().optional(),
+  documentId: z.string().nullable().optional()
+});
+
+// Contact communication/activity schema
+export const contactCommunicationSchema = z.object({
+  id: z.string(),
+  contactId: z.string(),
+  dealId: z.string().nullable().optional(),
+  activityType: activityTypeSchema,
+  direction: z.enum(['INBOUND', 'OUTBOUND']).nullable().optional(),
+  subject: z.string().nullable().optional(),
+  summary: z.string(),
+  isAutoLogged: z.boolean(),
+  sourceSystem: z.string().nullable().optional(),
+  occurredAt: z.string(),
+  recordedBy: z.string(),
+  recordedByName: z.string().nullable().optional(),
+  attachmentIds: z.string().nullable().optional(),
+  createdAt: z.string()
+});
+
+// Log activity request
+export const logActivityRequestSchema = z.object({
+  activityType: activityTypeSchema,
+  direction: z.enum(['INBOUND', 'OUTBOUND']).nullable().optional(),
+  subject: z.string().nullable().optional(),
+  summary: z.string().min(1),
+  dealId: z.string().nullable().optional(),
+  attachmentIds: z.array(z.string()).nullable().optional()
+});
+
+// Contact rating schema
+export const contactRatingSchema = z.object({
+  id: z.string(),
+  contactId: z.string(),
+  dealId: z.string().nullable().optional(),
+  overallRating: z.number().min(1).max(5),
+  qualityRating: z.number().min(1).max(5).nullable().optional(),
+  timelinessRating: z.number().min(1).max(5).nullable().optional(),
+  communicationRating: z.number().min(1).max(5).nullable().optional(),
+  valueRating: z.number().min(1).max(5).nullable().optional(),
+  comments: z.string().nullable().optional(),
+  wouldRecommend: z.boolean(),
+  isPublicToVendor: z.boolean(),
+  ratedBy: z.string(),
+  ratedByName: z.string().nullable().optional(),
+  ratedAt: z.string()
+});
+
+// Add rating request
+export const addRatingRequestSchema = z.object({
+  dealId: z.string().nullable().optional(),
+  overallRating: z.number().min(1).max(5),
+  qualityRating: z.number().min(1).max(5).nullable().optional(),
+  timelinessRating: z.number().min(1).max(5).nullable().optional(),
+  communicationRating: z.number().min(1).max(5).nullable().optional(),
+  valueRating: z.number().min(1).max(5).nullable().optional(),
+  comments: z.string().nullable().optional(),
+  wouldRecommend: z.boolean().default(true),
+  isPublicToVendor: z.boolean().default(true)
+});
+
+// Deal contact assignment schema
+export const dealContactSchema = z.object({
+  id: z.string(),
+  dealId: z.string(),
+  dealType: z.enum(['KERNEL', 'DRAFT']),
+  contactId: z.string(),
+  organizationId: z.string(),
+  role: z.string(),
+  isPrimary: z.boolean(),
+  feeType: feeTypeSchema.nullable().optional(),
+  estimatedFee: z.number().nullable().optional(),
+  actualFee: z.number().nullable().optional(),
+  feeNotes: z.string().nullable().optional(),
+  status: dealContactStatusSchema,
+  assignedAt: z.string(),
+  assignedBy: z.string(),
+  completedAt: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  // Joined contact data
+  contact: contactSchema.optional()
+});
+
+// Assign contact to deal request
+export const assignContactToDealRequestSchema = z.object({
+  contactId: z.string(),
+  role: z.string().min(1),
+  isPrimary: z.boolean().default(false),
+  feeType: feeTypeSchema.nullable().optional(),
+  estimatedFee: z.number().nullable().optional(),
+  feeNotes: z.string().nullable().optional()
+});
+
+// Update deal contact assignment request
+export const updateDealContactRequestSchema = z.object({
+  role: z.string().optional(),
+  isPrimary: z.boolean().optional(),
+  feeType: feeTypeSchema.nullable().optional(),
+  estimatedFee: z.number().nullable().optional(),
+  actualFee: z.number().nullable().optional(),
+  feeNotes: z.string().nullable().optional(),
+  status: dealContactStatusSchema.optional()
+});
+
+// Expiring credentials response
+export const expiringCredentialsResponseSchema = z.object({
+  credentials: z.array(z.object({
+    id: z.string(),
+    credentialName: z.string(),
+    credentialType: credentialTypeSchema,
+    expirationDate: z.string(),
+    daysUntilExpiry: z.number(),
+    status: credentialStatusSchema,
+    contact: z.object({
+      id: z.string(),
+      name: z.string(),
+      contactType: contactTypeSchema
+    })
+  }))
+});
+
+// Contact search/recent response (simplified for picker)
+export const contactPickerItemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  companyName: z.string().nullable().optional(),
+  contactType: contactTypeSchema,
+  email: z.string().nullable().optional(),
+  phone: z.string().nullable().optional(),
+  avgRating: z.number().nullable().optional(),
+  dealCount: z.number(),
+  isOrgPreferred: z.boolean(),
+  isFavorite: z.boolean().optional()
+});
+
+export const contactSearchResponseSchema = z.object({
+  contacts: z.array(contactPickerItemSchema)
+});

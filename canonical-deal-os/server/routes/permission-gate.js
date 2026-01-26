@@ -16,6 +16,21 @@ import {
   NDA_STATUSES,
   ACCESS_LEVELS
 } from '../services/permission-gate.js';
+import { createValidationLogger } from '../services/validation-logger.js';
+import {
+  AuthorizeBuyerSchema,
+  DeclineBuyerSchema,
+  RevokeBuyerSchema,
+  RecordNDASignedSchema,
+  BulkAuthorizeBuyersSchema,
+  BulkDeclineBuyersSchema,
+  GrantDataRoomAccessSchema
+} from '../middleware/route-schemas.js';
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload));
+}
 
 // Debug logging helper
 const DEBUG = process.env.DEBUG_ROUTES === 'true' || process.env.DEBUG === 'true';
@@ -58,6 +73,16 @@ export function dispatchPermissionGateRoutes(req, res, segments, readJsonBody, a
   // POST /api/gate/authorize/:dealDraftId/:buyerUserId - Authorize a buyer
   if (method === 'POST' && segments[0] === 'authorize' && segments[1] && segments[2]) {
     return handleAuthorizeBuyer(req, res, segments[1], segments[2], readJsonBody, authUser);
+  }
+
+  // POST /api/gate/bulk/authorize/:dealDraftId - Bulk authorize buyers
+  if (method === 'POST' && segments[0] === 'bulk' && segments[1] === 'authorize' && segments[2]) {
+    return handleBulkAuthorizeBuyers(req, res, segments[2], readJsonBody, authUser);
+  }
+
+  // POST /api/gate/bulk/decline/:dealDraftId - Bulk decline buyers
+  if (method === 'POST' && segments[0] === 'bulk' && segments[1] === 'decline' && segments[2]) {
+    return handleBulkDeclineBuyers(req, res, segments[2], readJsonBody, authUser);
   }
 
   // POST /api/gate/decline/:dealDraftId/:buyerUserId - Decline a buyer
@@ -166,20 +191,30 @@ async function handleAuthorizeBuyer(req, res, dealDraftId, buyerUserId, readJson
   try {
     const body = await readJsonBody();
 
-    // Validate access level if provided
-    if (body.accessLevel && !Object.values(ACCESS_LEVELS).includes(body.accessLevel)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: 'Invalid access level',
-        validLevels: Object.values(ACCESS_LEVELS)
-      }));
-      return;
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleAuthorizeBuyer');
+    validationLog.beforeValidation(body);
+
+    const parsed = AuthorizeBuyerSchema.safeParse(body || {});
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
 
     const authorization = await permissionGateService.authorizeBuyer(
       dealDraftId,
       buyerUserId,
-      { accessLevel: body.accessLevel },
+      { accessLevel: parsed.data.accessLevel },
       authUser
     );
 
@@ -206,16 +241,30 @@ async function handleDeclineBuyer(req, res, dealDraftId, buyerUserId, readJsonBo
   try {
     const body = await readJsonBody();
 
-    if (!body.reason) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Reason is required when declining a buyer' }));
-      return;
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleDeclineBuyer');
+    validationLog.beforeValidation(body);
+
+    const parsed = DeclineBuyerSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
 
     const authorization = await permissionGateService.declineBuyer(
       dealDraftId,
       buyerUserId,
-      body.reason,
+      parsed.data.reason,
       authUser
     );
 
@@ -233,6 +282,142 @@ async function handleDeclineBuyer(req, res, dealDraftId, buyerUserId, readJsonBo
 }
 
 /**
+ * Bulk authorize buyers
+ * POST /api/gate/bulk/authorize/:dealDraftId
+ * Body: { buyerUserIds: string[] }
+ * Response: { succeeded: string[], failed: { id: string, error: string }[] }
+ */
+async function handleBulkAuthorizeBuyers(req, res, dealDraftId, readJsonBody, authUser) {
+  debugLog('handleBulkAuthorizeBuyers', 'Bulk authorizing buyers', { dealDraftId });
+
+  try {
+    const body = await readJsonBody();
+
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleBulkAuthorizeBuyers');
+    validationLog.beforeValidation(body);
+
+    const parsed = BulkAuthorizeBuyersSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { buyerUserIds } = parsed.data;
+    const succeeded = [];
+    const failed = [];
+
+    // Process each buyer (continue on error)
+    for (const buyerUserId of buyerUserIds) {
+      try {
+        await permissionGateService.authorizeBuyer(
+          dealDraftId,
+          buyerUserId,
+          {},
+          authUser
+        );
+        succeeded.push(buyerUserId);
+        debugLog('handleBulkAuthorizeBuyers', 'Authorized', { buyerUserId });
+      } catch (error) {
+        failed.push({ id: buyerUserId, error: error.message });
+        debugLog('handleBulkAuthorizeBuyers', 'Failed to authorize', { buyerUserId, error: error.message });
+      }
+    }
+
+    debugLog('handleBulkAuthorizeBuyers', 'Bulk authorize complete', {
+      total: buyerUserIds.length,
+      succeeded: succeeded.length,
+      failed: failed.length
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ succeeded, failed }));
+  } catch (error) {
+    debugLog('handleBulkAuthorizeBuyers', 'Error', { error: error.message });
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
+
+/**
+ * Bulk decline buyers
+ * POST /api/gate/bulk/decline/:dealDraftId
+ * Body: { buyerUserIds: string[], reason?: string }
+ * Response: { succeeded: string[], failed: { id: string, error: string }[] }
+ */
+async function handleBulkDeclineBuyers(req, res, dealDraftId, readJsonBody, authUser) {
+  debugLog('handleBulkDeclineBuyers', 'Bulk declining buyers', { dealDraftId });
+
+  try {
+    const body = await readJsonBody();
+
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleBulkDeclineBuyers');
+    validationLog.beforeValidation(body);
+
+    const parsed = BulkDeclineBuyersSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { buyerUserIds, reason } = parsed.data;
+    const succeeded = [];
+    const failed = [];
+
+    // Process each buyer (continue on error)
+    for (const buyerUserId of buyerUserIds) {
+      try {
+        await permissionGateService.declineBuyer(
+          dealDraftId,
+          buyerUserId,
+          reason,
+          authUser
+        );
+        succeeded.push(buyerUserId);
+        debugLog('handleBulkDeclineBuyers', 'Declined', { buyerUserId });
+      } catch (error) {
+        failed.push({ id: buyerUserId, error: error.message });
+        debugLog('handleBulkDeclineBuyers', 'Failed to decline', { buyerUserId, error: error.message });
+      }
+    }
+
+    debugLog('handleBulkDeclineBuyers', 'Bulk decline complete', {
+      total: buyerUserIds.length,
+      succeeded: succeeded.length,
+      failed: failed.length
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ succeeded, failed }));
+  } catch (error) {
+    debugLog('handleBulkDeclineBuyers', 'Error', { error: error.message });
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
+
+/**
  * Revoke access from a buyer
  * POST /api/gate/revoke/:dealDraftId/:buyerUserId
  */
@@ -242,16 +427,30 @@ async function handleRevokeBuyer(req, res, dealDraftId, buyerUserId, readJsonBod
   try {
     const body = await readJsonBody();
 
-    if (!body.reason) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Reason is required when revoking access' }));
-      return;
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleRevokeBuyer');
+    validationLog.beforeValidation(body);
+
+    const parsed = RevokeBuyerSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
 
     const authorization = await permissionGateService.revokeBuyer(
       dealDraftId,
       buyerUserId,
-      body.reason,
+      parsed.data.reason,
       authUser
     );
 
@@ -303,10 +502,30 @@ async function handleRecordNDASigned(req, res, dealDraftId, buyerUserId, readJso
   try {
     const body = await readJsonBody();
 
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleRecordNDASigned');
+    validationLog.beforeValidation(body);
+
+    const parsed = RecordNDASignedSchema.safeParse(body || {});
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
     const authorization = await permissionGateService.recordNDASigned(
       dealDraftId,
       buyerUserId,
-      body.ndaDocumentId
+      parsed.data.ndaDocumentId
     );
 
     debugLog('handleRecordNDASigned', 'NDA signed recorded', {
@@ -332,21 +551,30 @@ async function handleGrantDataRoomAccess(req, res, dealDraftId, buyerUserId, rea
   try {
     const body = await readJsonBody();
 
-    // Validate access level
-    const accessLevel = body.accessLevel || ACCESS_LEVELS.STANDARD;
-    if (!Object.values(ACCESS_LEVELS).includes(accessLevel)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: 'Invalid access level',
-        validLevels: Object.values(ACCESS_LEVELS)
-      }));
-      return;
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleGrantDataRoomAccess');
+    validationLog.beforeValidation(body);
+
+    const parsed = GrantDataRoomAccessSchema.safeParse(body || {});
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
     }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
 
     const authorization = await permissionGateService.grantDataRoomAccess(
       dealDraftId,
       buyerUserId,
-      accessLevel,
+      parsed.data.accessLevel,
       authUser
     );
 

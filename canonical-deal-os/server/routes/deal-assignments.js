@@ -1,6 +1,8 @@
 import { getPrisma } from "../db.js";
 import { extractAuthUser } from "./auth.js";
 import { readStore } from "../store.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+import { AssignAnalystSchema, BulkAssignAnalystSchema } from "../middleware/route-schemas.js";
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -65,24 +67,43 @@ export async function handleListDealAssignments(req, res, dealId) {
 
 /**
  * Assign an analyst to a deal (GP only)
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleAssignAnalyst(req, res, dealId, readJsonBody, resolveUserId, resolveActorRole) {
+export async function handleAssignAnalyst(req, res, dealId, readJsonBody, authUser) {
   // Organization isolation check
-  const authUser = await requireDealOrgAccess(req, res, dealId);
-  if (!authUser) return;
+  const verifiedAuthUser = await requireDealOrgAccess(req, res, dealId);
+  if (!verifiedAuthUser) return;
 
   // Only GP or Admin can assign analysts
-  if (!['GP', 'Admin'].includes(authUser.role)) {
+  if (!['GP', 'Admin'].includes(verifiedAuthUser.role)) {
     return sendError(res, 403, "Only GP or Admin can assign analysts to deals");
   }
 
   const body = await readJsonBody(req);
-  if (!body?.userId) {
-    return sendError(res, 400, "userId is required");
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleAssignAnalyst');
+  validationLog.beforeValidation(body);
+
+  const parsed = AssignAnalystSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
 
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   const prisma = getPrisma();
-  const assignedBy = resolveUserId(req);
+  const assignedBy = authUser.id;  // T1.3: Use validated JWT identity
 
   try {
     // Check if already assigned
@@ -90,7 +111,7 @@ export async function handleAssignAnalyst(req, res, dealId, readJsonBody, resolv
       where: {
         dealId_userId: {
           dealId,
-          userId: body.userId
+          userId: parsed.data.userId
         }
       }
     });
@@ -107,8 +128,8 @@ export async function handleAssignAnalyst(req, res, dealId, readJsonBody, resolv
           removedAt: null,
           assignedBy,
           assignedAt: new Date(),
-          userName: body.userName ?? existing.userName,
-          role: body.role ?? "analyst"
+          userName: parsed.data.userName ?? existing.userName,
+          role: parsed.data.role ?? "analyst"
         }
       });
 
@@ -117,14 +138,14 @@ export async function handleAssignAnalyst(req, res, dealId, readJsonBody, resolv
         data: {
           actorId: authUser.id,
           actorName: authUser.name || null,
-          targetUserId: body.userId,
-          targetUserName: body.userName || existing.userName || null,
+          targetUserId: parsed.data.userId,
+          targetUserName: parsed.data.userName || existing.userName || null,
           action: 'DEAL_ASSIGNMENT_REACTIVATED',
           afterValue: JSON.stringify({
             dealId,
-            analystId: body.userId,
-            analystName: body.userName || existing.userName,
-            role: body.role ?? "analyst"
+            analystId: parsed.data.userId,
+            analystName: parsed.data.userName || existing.userName,
+            role: parsed.data.role ?? "analyst"
           }),
           ipAddress: req.headers["x-forwarded-for"] || req.socket?.remoteAddress || null
         }
@@ -137,9 +158,9 @@ export async function handleAssignAnalyst(req, res, dealId, readJsonBody, resolv
     const assignment = await prisma.dealAssignment.create({
       data: {
         dealId,
-        userId: body.userId,
-        userName: body.userName ?? null,
-        role: body.role ?? "analyst",
+        userId: parsed.data.userId,
+        userName: parsed.data.userName ?? null,
+        role: parsed.data.role ?? "analyst",
         assignedBy
       }
     });
@@ -149,14 +170,14 @@ export async function handleAssignAnalyst(req, res, dealId, readJsonBody, resolv
       data: {
         actorId: authUser.id,
         actorName: authUser.name || null,
-        targetUserId: body.userId,
-        targetUserName: body.userName || null,
+        targetUserId: parsed.data.userId,
+        targetUserName: parsed.data.userName || null,
         action: 'DEAL_ASSIGNMENT_CREATED',
         afterValue: JSON.stringify({
           dealId,
-          analystId: body.userId,
-          analystName: body.userName,
-          role: body.role ?? "analyst"
+          analystId: parsed.data.userId,
+          analystName: parsed.data.userName,
+          role: parsed.data.role ?? "analyst"
         }),
         ipAddress: req.headers["x-forwarded-for"] || req.socket?.remoteAddress || null
       }
@@ -171,8 +192,10 @@ export async function handleAssignAnalyst(req, res, dealId, readJsonBody, resolv
 
 /**
  * Remove an analyst from a deal (GP only)
+ *
+ * T1.3 (P1 Security Sprint): Removed resolveActorRole param (unused)
  */
-export async function handleUnassignAnalyst(req, res, dealId, userId, resolveActorRole) {
+export async function handleUnassignAnalyst(req, res, dealId, userId) {
   // Organization isolation check
   const authUser = await requireDealOrgAccess(req, res, dealId);
   if (!authUser) return;
@@ -293,4 +316,142 @@ export async function checkDealAccess(role, userId, dealId) {
   }
 
   return { allowed: false, reason: 'Unknown role' };
+}
+
+/**
+ * Bulk assign an analyst to multiple deals (GP only)
+ *
+ * Request body: { dealIds: string[], userId: string, userName?: string, role?: string }
+ * Response: { succeeded: string[], failed: { id: string, name?: string, error: string }[] }
+ */
+export async function handleBulkAssignAnalyst(req, res, readJsonBody) {
+  const authUser = await extractAuthUser(req);
+  if (!authUser) {
+    return sendError(res, 401, "Not authenticated");
+  }
+
+  // Only GP or Admin can assign analysts
+  if (!['GP', 'Admin'].includes(authUser.role)) {
+    return sendError(res, 403, "Only GP or Admin can assign analysts to deals");
+  }
+
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleBulkAssignAnalyst');
+  validationLog.beforeValidation(body);
+
+  const parsed = BulkAssignAnalystSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  const prisma = getPrisma();
+  const store = await readStore();
+  const succeeded = [];
+  const failed = [];
+
+  console.log(`[Bulk] Assigning analyst to ${parsed.data.dealIds.length} deals`);
+
+  for (const dealId of parsed.data.dealIds) {
+    try {
+      // Find deal in store
+      const dealRecord = store.dealIndex.find((item) => item.id === dealId);
+
+      // Check org isolation
+      if (!dealRecord) {
+        failed.push({ id: dealId, error: 'Deal not found' });
+        continue;
+      }
+
+      if (dealRecord.organizationId && dealRecord.organizationId !== authUser.organizationId) {
+        failed.push({ id: dealId, name: dealRecord.name, error: 'Access denied - different organization' });
+        continue;
+      }
+
+      // Check if already assigned
+      const existing = await prisma.dealAssignment.findUnique({
+        where: {
+          dealId_userId: {
+            dealId,
+            userId: parsed.data.userId
+          }
+        }
+      });
+
+      if (existing && !existing.removedAt) {
+        // Already assigned - count as success (idempotent)
+        succeeded.push(dealId);
+        continue;
+      }
+
+      if (existing && existing.removedAt) {
+        // Reactivate
+        await prisma.dealAssignment.update({
+          where: { id: existing.id },
+          data: {
+            removedAt: null,
+            assignedBy: authUser.id,
+            assignedAt: new Date(),
+            userName: parsed.data.userName ?? existing.userName,
+            role: parsed.data.role ?? "analyst"
+          }
+        });
+      } else {
+        // Create new assignment
+        await prisma.dealAssignment.create({
+          data: {
+            dealId,
+            userId: parsed.data.userId,
+            userName: parsed.data.userName ?? null,
+            role: parsed.data.role ?? "analyst",
+            assignedBy: authUser.id
+          }
+        });
+      }
+
+      // Audit log
+      await prisma.permissionAuditLog.create({
+        data: {
+          actorId: authUser.id,
+          actorName: authUser.name || null,
+          targetUserId: parsed.data.userId,
+          targetUserName: parsed.data.userName || null,
+          action: 'BULK_DEAL_ASSIGNMENT_CREATED',
+          afterValue: JSON.stringify({
+            dealId,
+            analystId: parsed.data.userId,
+            analystName: parsed.data.userName,
+            role: parsed.data.role ?? "analyst"
+          }),
+          ipAddress: req.headers["x-forwarded-for"] || req.socket?.remoteAddress || null
+        }
+      });
+
+      succeeded.push(dealId);
+    } catch (error) {
+      console.error(`[Bulk] Failed to assign deal ${dealId}:`, error.message);
+      const dealRecord = store.dealIndex.find((item) => item.id === dealId);
+      failed.push({
+        id: dealId,
+        name: dealRecord?.name,
+        error: error.message || 'Unknown error'
+      });
+    }
+  }
+
+  console.log(`[Bulk] Assignment complete: ${succeeded.length} succeeded, ${failed.length} failed`);
+
+  sendJson(res, 200, { succeeded, failed });
 }

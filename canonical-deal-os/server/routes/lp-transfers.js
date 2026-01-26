@@ -17,6 +17,8 @@ import { getPrisma } from "../db.js";
 import { extractAuthUser } from "./auth.js";
 import { createDealEvent } from "../services/audit-service.js";
 import { readStore } from "../store.js";
+import { CreateLPTransferSchema } from "../middleware/route-schemas.js";
+import { createValidationLogger } from "../services/validation-logger.js";
 
 const LOG_PREFIX = "[LPTransfers]";
 
@@ -155,20 +157,24 @@ export async function handleCreateTransfer(req, res, dealId, readJsonBody) {
   const authUser = await requireGPWithDealOrgAccess(req, res, dealId);
   if (!authUser) return;
 
-  const body = await readJsonBody(req);
-  log(`Transfer request body`, { fromLpActorId: body?.fromLpActorId, toLpActorId: body?.toLpActorId, amount: body?.transferAmount });
+  const validationLog = createValidationLogger('handleCreateTransfer');
+  const rawBody = await readJsonBody(req);
+  validationLog.beforeValidation(rawBody);
 
-  // Validate required fields
-  if (!body?.fromLpActorId || !body?.toLpActorId || !body?.transferAmount || !body?.transferPct || !body?.effectiveDate) {
-    log(`Validation failed - missing required fields`);
-    return sendError(res, 400, "fromLpActorId, toLpActorId, transferAmount, transferPct, and effectiveDate are required");
+  // Validate with Zod schema
+  const parseResult = CreateLPTransferSchema.safeParse(rawBody ?? {});
+  if (!parseResult.success) {
+    validationLog.validationFailed(parseResult.error.errors);
+    log(`Validation failed`, { errors: parseResult.error.errors });
+    return sendError(res, 400, "Validation failed", {
+      code: 'VALIDATION_FAILED',
+      errors: parseResult.error.errors
+    });
   }
 
-  // Cannot transfer to self
-  if (body.fromLpActorId === body.toLpActorId) {
-    log(`Validation failed - self transfer`);
-    return sendError(res, 400, "Cannot transfer to the same LP");
-  }
+  const body = parseResult.data;
+  validationLog.afterValidation(body);
+  log(`Transfer request body`, { fromLpActorId: body.fromLpActorId, toLpActorId: body.toLpActorId, amount: body.transferAmount });
 
   const prisma = getPrisma();
 

@@ -11,6 +11,9 @@ import { parseExcelFile, getSheetData } from '../services/excel-parser.js';
 import { autoMapExcelToModel, setManualMapping, validateMappings, getAllMappableFields } from '../services/excel-mapper.js';
 import { detectModelType, getEnhancedMappings, getExportTemplate } from '../services/excel-model-detector.js';
 import { exportToExcel } from '../services/excel-exporter.js';
+import { extractAuthUser } from './auth.js';
+import { createValidationLogger } from '../services/validation-logger.js';
+import { UpdateMappingsSchema, ApplyExcelImportSchema } from '../middleware/route-schemas.js';
 
 /**
  * Helper to send JSON responses
@@ -290,14 +293,36 @@ export async function handleGetExcelImport(req, res, importId, authUser) {
  * PATCH /api/excel-imports/:id/mappings
  * Update mappings for an import (manual adjustments)
  * SECURITY: authUser passed from dispatch for org isolation check
+ *
+ * T3.2 (P3 Security Sprint): Added Zod validation
  */
-export async function handleUpdateMappings(req, res, importId, authUser) {
+export async function handleUpdateMappings(req, res, importId, authUser, readJsonBody) {
   const prisma = getPrisma();
 
   try {
-    let body = '';
-    for await (const chunk of req) body += chunk;
-    const { mappings } = JSON.parse(body);
+    const body = await readJsonBody(req);
+
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleUpdateMappings');
+    validationLog.beforeValidation(body);
+
+    const parsed = UpdateMappingsSchema.safeParse(body);
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { mappings } = parsed.data;
 
     // SECURITY: Include deal to verify org isolation
     const excelImport = await prisma.excelImport.findUnique({
@@ -314,9 +339,18 @@ export async function handleUpdateMappings(req, res, importId, authUser) {
       return sendJson(res, 403, { error: 'Access denied - import belongs to different organization' });
     }
 
+    // Convert array format to object format for storage
+    const mappingsObj = {};
+    for (const mapping of mappings) {
+      mappingsObj[mapping.targetField] = {
+        source: mapping.sourceColumn,
+        transform: mapping.transform || null
+      };
+    }
+
     // Merge with existing mappings
     const existingMappings = excelImport.mappedFields ? JSON.parse(excelImport.mappedFields) : {};
-    const updatedMappings = { ...existingMappings, ...mappings };
+    const updatedMappings = { ...existingMappings, ...mappingsObj };
 
     // Update import record
     await prisma.excelImport.update({
@@ -327,18 +361,18 @@ export async function handleUpdateMappings(req, res, importId, authUser) {
     });
 
     // Update cell mappings
-    for (const [field, mapping] of Object.entries(mappings)) {
-      if (mapping && mapping.cell) {
+    for (const mapping of mappings) {
+      if (mapping.sourceColumn) {
         await prisma.excelCell.updateMany({
-          where: { importId, cellRef: mapping.cell },
-          data: { mappedTo: field }
+          where: { importId, cellRef: mapping.sourceColumn },
+          data: { mappedTo: mapping.targetField }
         });
       }
     }
 
     return sendJson(res, 200, {
       mappings: updatedMappings,
-      updated: Object.keys(mappings)
+      updated: mappings.map(m => m.targetField)
     });
 
   } catch (error) {
@@ -351,17 +385,39 @@ export async function handleUpdateMappings(req, res, importId, authUser) {
  * POST /api/excel-imports/:id/apply
  * Apply Excel mappings to underwriting model
  * SECURITY: authUser passed from dispatch for org isolation check
+ *
+ * T3.2 (P3 Security Sprint): Added Zod validation
  */
-export async function handleApplyExcelImport(req, res, importId, authUser) {
+export async function handleApplyExcelImport(req, res, importId, authUser, readJsonBody) {
   const prisma = getPrisma();
   // SECURITY: Use validated authUser identity, not spoofable headers
   const userId = authUser.id;
   const userName = authUser.name || 'System';
 
   try {
-    let body = '';
-    for await (const chunk of req) body += chunk;
-    const { fields } = body ? JSON.parse(body) : {}; // Optional: specific fields to apply
+    const body = await readJsonBody(req);
+
+    // ========== VALIDATION ==========
+    const validationLog = createValidationLogger('handleApplyExcelImport');
+    validationLog.beforeValidation(body);
+
+    const parsed = ApplyExcelImportSchema.safeParse(body || {});
+    if (!parsed.success) {
+      validationLog.validationFailed(parsed.error.errors);
+      return sendJson(res, 400, {
+        code: 'VALIDATION_FAILED',
+        message: 'Invalid request body',
+        errors: parsed.error.errors.map(e => ({
+          field: e.path.join('.'),
+          message: e.message
+        }))
+      });
+    }
+
+    validationLog.afterValidation(parsed.data);
+    // ================================
+
+    const { fields } = parsed.data; // Optional: specific fields to apply
 
     // SECURITY: Include deal to verify org isolation
     const excelImport = await prisma.excelImport.findUnique({
@@ -524,8 +580,16 @@ export async function handleGetExcelSheet(req, res, importId, sheetName, authUse
 /**
  * GET /api/excel/mappable-fields
  * Get list of all fields that can be mapped from Excel
+ *
+ * SECURITY: Requires authentication
  */
 export async function handleGetMappableFields(req, res) {
+  // SECURITY: Require authentication
+  const authUser = await extractAuthUser(req);
+  if (!authUser) {
+    return sendJson(res, 401, { error: 'Authentication required' });
+  }
+
   try {
     const fields = getAllMappableFields();
     return sendJson(res, 200, { fields });
@@ -616,8 +680,16 @@ export async function handleExcelExport(req, res, dealId) {
 /**
  * GET /api/excel/templates
  * List available export templates
+ *
+ * SECURITY: Requires authentication
  */
 export async function handleGetExportTemplates(req, res) {
+  // SECURITY: Require authentication
+  const authUser = await extractAuthUser(req);
+  if (!authUser) {
+    return sendJson(res, 401, { error: 'Authentication required' });
+  }
+
   try {
     const templates = [
       {

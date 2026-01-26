@@ -1,0 +1,7 @@
+{
+  "_comment": "Request body for POST /api/om/draft/:dealDraftId/generate",
+  "_schema": "omGenerateRequestSchema",
+  "_source": "canonical-deal-os/src/lib/contracts/om.js",
+
+  "regenerate": false
+}

@@ -11,82 +11,72 @@ Contract-first development means we define our API shapes (schemas) before writi
 3. **Documentation** - Schemas serve as living documentation
 4. **Testing** - Fixtures can be validated automatically
 
-## Schema Locations
+## Contract Source of Truth
 
-### HTTP Contracts (Canonical Source)
+### Canonical Sources
 
-All HTTP request/response schemas are defined in:
+| Type | Location | Description |
+|------|----------|-------------|
+| **HTTP Schemas** | `canonical-deal-os/src/lib/contracts.js` | All Zod schemas for HTTP requests/responses |
+| **Event Types** | `cre-kernel-phase1/packages/shared/src/index.ts` | EventTypes, DealStates, TruthIndicator |
+| **Kernel API** | `cre-kernel-phase1/apps/kernel-api/src/server.ts:100-106` | Inline createEventSchema |
 
-```
-canonical-deal-os/src/lib/contracts.js
-```
-
-This file contains **Zod schemas** that define:
-- Request payloads (what the client sends)
-- Response payloads (what the server returns)
-- Shared types (reused across endpoints)
-
-**Key schemas:**
-
-| Schema | Purpose |
-|--------|---------|
-| `createDealRequestSchema` | Request body for POST /api/deals |
-| `dealSchema` | Single deal response shape |
-| `dealListResponseSchema` | Array of deals |
-| `dealHomeResponseSchema` | Deal detail page data |
-| `lpInvitationRequestSchema` | LP invitation request |
-| `explainBlockSchema` | Blocked action explanation |
-| `explainAllowedSchema` | Allowed action confirmation |
-
-### Kernel Event Contracts
-
-Event types and shared constants are defined in:
+### Re-exports for Validation
 
 ```
-cre-kernel-phase1/packages/shared/src/index.ts
+contracts/
+├── schemas.js      # Re-exports from canonical sources + kernelEventSchema
+├── manifest.json   # Strict fixture→schema mapping (authoritative)
 ```
 
-**Key exports:**
+**IMPORTANT:** Do NOT define new schemas in `/contracts/schemas.js`. Add them to the canonical source (`contracts.js`) and re-export.
+
+## Schema Inventory
+
+### HTTP Schemas (from `canonical-deal-os/src/lib/contracts.js`)
+
+| Schema | Line | Purpose |
+|--------|------|---------|
+| `createDealRequestSchema` | ~27 | Request body for POST /api/deals |
+| `dealSchema` | ~52 | Single deal response shape |
+| `lpInvitationRequestSchema` | ~448 | LP invitation request |
+| `explainBlockSchema` | ~168 | Blocked action explanation |
+| `explainAllowedSchema` | ~195 | Allowed action confirmation |
+
+### Event Schemas (from `contracts/schemas.js`)
+
+| Schema | Source | Purpose |
+|--------|--------|---------|
+| `kernelEventSchema` | Mirrors kernel-api/src/server.ts | Kernel event structure validation |
+
+### Type Constants (from `cre-kernel-phase1/packages/shared/src/index.ts`)
 
 ```typescript
-// Event types
-export const EventTypes = {
-  ReviewOpened: "ReviewOpened",
-  DealApproved: "DealApproved",
-  ClosingFinalized: "ClosingFinalized",
-  // ... more
-};
-
-// Deal lifecycle states
-export const DealStates = {
-  Draft: "Draft",
-  UnderReview: "UnderReview",
-  Approved: "Approved",
-  // ... more
-};
-
-// Truth class hierarchy
-export type TruthIndicator = "DOC" | "HUMAN" | "AI";
+EventTypes = { ReviewOpened, DealApproved, ClosingFinalized, ... }
+DealStates = { Draft, UnderReview, Approved, Closed, ... }
+TruthIndicator = "DOC" | "HUMAN" | "AI"
 ```
 
-### Kernel API Schemas (Inline)
+## Fixture→Schema Manifest
 
-Kernel request validation schemas are defined inline in:
+The manifest at `/contracts/manifest.json` is the **authoritative** mapping. Every fixture MUST be listed:
 
+```json
+{
+  "http": {
+    "create-deal-request.json": { "schema": "createDealRequestSchema" },
+    "create-deal-response.json": { "schema": "dealSchema" },
+    "lp-invitation-request.json": { "schema": "lpInvitationRequestSchema" },
+    "explain-blocked-response.json": { "schema": "explainBlockSchema" }
+  },
+  "events": {
+    "review-opened.json": { "schema": "kernelEventSchema" },
+    "deal-approved.json": { "schema": "kernelEventSchema" }
+  }
+}
 ```
-cre-kernel-phase1/apps/kernel-api/src/server.ts (lines 20-123)
-```
 
-**Key schemas:**
-
-| Schema | Purpose |
-|--------|---------|
-| `createDealSchema` | POST /deals request |
-| `createEventSchema` | POST /deals/:id/events request |
-| `createMaterialSchema` | POST /deals/:id/materials request |
-| `explainBodySchema` | POST /deals/:id/explain request |
-
-## How to Validate
+## Validation (STRICT MODE)
 
 Run contract validation from the repository root:
 
@@ -94,40 +84,60 @@ Run contract validation from the repository root:
 npm run validate:contracts
 ```
 
-This command:
-1. Loads fixtures from `/fixtures/http/` and `/fixtures/events/`
-2. Imports Zod schemas from `contracts.js`
-3. Validates each fixture against its schema
-4. Reports any mismatches
-5. Exits with code 1 on failure (blocks CI)
+**Strict behavior:**
+- Every fixture in `/fixtures/` MUST have a mapping in `manifest.json`
+- Unmapped fixtures cause validation to FAIL (exit code 1)
+- CI blocks merge until all fixtures are mapped and valid
+
+### Validation Output
+
+```
+🔍 Validating API Contracts (STRICT MODE)
+
+HTTP Fixtures (fixtures/http/):
+  ✓ create-deal-request.json
+  ✓ create-deal-response.json
+  ✓ lp-invitation-request.json
+  ✓ explain-blocked-response.json
+
+Event Fixtures (fixtures/events/):
+  ✓ review-opened.json
+  ✓ deal-approved.json
+
+──────────────────────────────────────────────────
+
+📊 Results: 6/6 fixtures passed
+
+✅ All contract validations passed (strict mode)
+```
 
 ## How to Add New Contracts
 
-### Step 1: Define the Zod Schema
+### Step 1: Define the Zod Schema (in canonical source)
 
 Add to `canonical-deal-os/src/lib/contracts.js`:
 
 ```javascript
-// Request schema
 export const myFeatureRequestSchema = z.object({
   name: z.string().min(1),
   value: z.number().optional()
 });
-
-// Response schema
-export const myFeatureResponseSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  createdAt: z.string()
-});
 ```
 
-### Step 2: Create Example Fixtures
+### Step 2: Re-export in `/contracts/schemas.js`
 
-Add annotated examples to `/fixtures/http/`:
+```javascript
+export {
+  // ... existing exports
+  myFeatureRequestSchema
+} from '../canonical-deal-os/src/lib/contracts.js';
+```
+
+### Step 3: Create Fixture
+
+Add to `/fixtures/http/my-feature-request.json`:
 
 ```json
-// fixtures/http/my-feature-request.json
 {
   "_comment": "Request to create my feature",
   "name": "Example Name",
@@ -135,35 +145,26 @@ Add annotated examples to `/fixtures/http/`:
 }
 ```
 
+### Step 4: Add to Manifest
+
+Update `/contracts/manifest.json`:
+
 ```json
-// fixtures/http/my-feature-response.json
 {
-  "_comment": "Response after creating my feature",
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "name": "Example Name",
-  "createdAt": "2026-01-21T10:00:00.000Z"
+  "http": {
+    "my-feature-request.json": {
+      "schema": "myFeatureRequestSchema",
+      "description": "Request body for POST /api/my-feature"
+    }
+  }
 }
 ```
 
-### Step 3: Update Validation Script
-
-Add schema mapping in `/scripts/validate-contracts.js`:
-
-```javascript
-const schemaMap = {
-  // ... existing mappings
-  'my-feature-request.json': myFeatureRequestSchema,
-  'my-feature-response.json': myFeatureResponseSchema
-};
-```
-
-### Step 4: Run Validation
+### Step 5: Run Validation
 
 ```bash
 npm run validate:contracts
 ```
-
-If validation fails, fix the fixture or schema until they match.
 
 ## Fixture Annotation Convention
 
@@ -173,21 +174,19 @@ Fixtures use `_comment` fields to explain the data:
 {
   "_comment": "Main description of this fixture",
   "field1": "value",
-  "_field1_comment": "Explanation of field1",
-  "nested": {
-    "_comment": "Description of nested object",
-    "innerField": 123
-  }
+  "_field1_comment": "Explanation of field1"
 }
 ```
 
-The validation script strips `_comment` fields before validating.
+The validation script strips `_` prefixed fields before validating.
 
 ## Directory Structure
 
 ```
 contracts/
 ├── README.md           # This file
+├── schemas.js          # Re-exports from canonical sources
+├── manifest.json       # Strict fixture→schema mapping
 ├── http/
 │   └── README.md       # HTTP schema documentation
 ├── events/
@@ -195,6 +194,45 @@ contracts/
 └── examples/
     └── README.md       # Usage examples
 ```
+
+## Contract Versioning Convention
+
+### Rules (NOT YET ENFORCED)
+
+This section documents the versioning convention for future implementation.
+
+**Version Format:** `v{major}` folders when breaking changes occur.
+
+```
+canonical-deal-os/src/contracts/
+├── http/
+│   ├── deals.schema.js        # Current (v1 implicit)
+│   └── v2/
+│       └── deals.schema.js    # Breaking change version
+└── events/
+    └── ...
+```
+
+**Semantic Expectations:**
+
+| Change Type | Version Bump | Example |
+|-------------|--------------|---------|
+| Add optional field | None | `profile.newField?: string` |
+| Add required field | MAJOR (v2) | `organizationId: string` (required) |
+| Remove field | MAJOR (v2) | Remove `legacy_field` |
+| Change field type | MAJOR (v2) | `price: string` → `price: number` |
+| Rename field | MAJOR (v2) | `assetType` → `asset_type` |
+
+**Migration Path:**
+1. Create `v2/` folder with new schema
+2. Update `contracts/index.js` to export both versions
+3. Add deprecation notice to v1 schema
+4. Migrate consumers over time
+5. Remove v1 after migration complete
+
+**Current Status:** All schemas are implicitly v1. No v2 folders exist yet.
+
+---
 
 ## Related Documentation
 

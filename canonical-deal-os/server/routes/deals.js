@@ -167,7 +167,10 @@ export async function handleListDeals(req, res, kernelBaseUrl, inFlight, authUse
   sendJson(res, 200, dealListResponseSchema.parse(deals));
 }
 
-export async function handleCreateDeal(req, res, kernelBaseUrl, readJsonBody, getPrisma, resolveUserId, authUser) {
+/**
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT (removed resolveUserId)
+ */
+export async function handleCreateDeal(req, res, kernelBaseUrl, readJsonBody, getPrisma, authUser) {
   log('INFO', 'DEALS', 'Create deal request started', { userId: authUser?.id, role: authUser?.role });
 
   // Role enforcement: only GP or Admin can create deals
@@ -225,7 +228,7 @@ export async function handleCreateDeal(req, res, kernelBaseUrl, readJsonBody, ge
         await prisma.workflowTask.createMany({
           data: recommendedTasks.map((task) => ({
             dealId: kernelDeal.id,
-            createdByUserId: resolveUserId(req),
+            createdByUserId: authUser.id,  // T1.3: Use validated JWT identity
             type: task.type ?? "REQUEST_EVIDENCE",
             title: task.title ?? "Provide evidence",
             description: task.description ?? null,

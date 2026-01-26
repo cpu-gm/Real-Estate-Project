@@ -8,6 +8,7 @@ import { bff } from "@/api/bffClient";
 import { createPageUrl } from "@/utils";
 import { debugLog } from "@/lib/debug";
 import { PageError } from "@/components/ui/page-state";
+import BrokerDealView from "@/pages/broker/BrokerDealView";
 
 // New property dashboard components
 import PropertyHero from "@/components/property/PropertyHero";
@@ -302,6 +303,15 @@ export default function DealWorkspace() {
     error: draftError
   } = useIntakeDealOverview(dealDraftId);
 
+  // Query to check user's access level to this deal
+  const accessQuery = useQuery({
+    queryKey: ["dealAccess", dealDraftId],
+    queryFn: () => bff.dealIntake.checkAccess(dealDraftId),
+    enabled: !!dealDraftId,
+    retry: false,
+    staleTime: 30000 // Cache for 30 seconds
+  });
+
   // Query for listing details
   const listingQuery = useQuery({
     queryKey: ["listing", dealDraftId],
@@ -368,8 +378,8 @@ export default function DealWorkspace() {
 
   if (!dealDraftId) {
     return (
-      <div className="p-6">
-        <div className="bg-white rounded-lg shadow p-6 text-sm text-gray-500">
+      <div className="p-ds-24">
+        <div className="bg-card rounded-md border border-border p-ds-24 text-ds-body text-muted-foreground">
           Missing dealDraftId. Please select a property from the list.
         </div>
       </div>
@@ -378,17 +388,17 @@ export default function DealWorkspace() {
 
   if (draftError) {
     return (
-      <div className="p-6">
+      <div className="p-ds-24">
         <PageError error={draftError} />
       </div>
     );
   }
 
-  if (draftLoading || !propertyData) {
+  if (draftLoading || !propertyData || accessQuery.isLoading) {
     return (
-      <div className="p-6 space-y-4">
-        <Skeleton className="h-64 w-full rounded-lg" />
-        <div className="grid grid-cols-4 gap-4">
+      <div className="p-ds-24 space-y-ds-16">
+        <Skeleton className="h-64 w-full rounded-md" />
+        <div className="grid grid-cols-4 gap-ds-16">
           <Skeleton className="h-24" />
           <Skeleton className="h-24" />
           <Skeleton className="h-24" />
@@ -400,11 +410,30 @@ export default function DealWorkspace() {
     );
   }
 
+  // Route to broker view if user is an invited broker (not owner)
+  const accessData = accessQuery.data;
+  if (accessData?.relation === 'broker_pending' || accessData?.relation === 'broker_accepted') {
+    return (
+      <BrokerDealView
+        dealDraftId={dealDraftId}
+        draft={draft}
+        accessData={accessData}
+        listingData={listingQuery.data}
+      />
+    );
+  }
+
+  // TODO: Add BuyerDealView routing when user is a buyer
+  // if (accessData?.relation === 'buyer') {
+  //   return <BuyerDealView ... />;
+  // }
+
   const documents = documentsQuery.data ?? [];
 
+  // Owner view (default - full access)
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="max-w-7xl mx-auto p-6 space-y-6">
+    <div className="min-h-screen bg-background">
+      <div className="max-w-content mx-auto p-ds-24 space-y-ds-24">
         {/* Hero Header */}
         <PropertyHero
           {...propertyData.hero}
@@ -442,7 +471,7 @@ export default function DealWorkspace() {
 
         {/* Tabbed Content */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid grid-cols-5 w-full max-w-2xl">
+        <TabsList className="grid grid-cols-5 w-full max-w-2xl">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="financials">Financials</TabsTrigger>
             <TabsTrigger value="rentroll">Rent Roll</TabsTrigger>
@@ -450,7 +479,7 @@ export default function DealWorkspace() {
             <TabsTrigger value="documents">Documents</TabsTrigger>
           </TabsList>
 
-          <div className="mt-6">
+          <div className="mt-ds-24">
             <TabsContent value="overview" className="m-0">
               <PropertyInfo {...propertyData.info} />
             </TabsContent>

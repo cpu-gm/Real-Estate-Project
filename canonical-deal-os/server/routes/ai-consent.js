@@ -24,6 +24,9 @@ import {
   AI_FEATURES,
   CONSENT_CONFIG,
 } from '../services/ai-consent.js';
+import { GrantConsentSchema } from '../middleware/route-schemas.js';
+import { createValidationLogger } from '../services/validation-logger.js';
+import { extractAuthUser } from './auth.js';
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -80,18 +83,34 @@ export async function handleGrantConsent(req, res, authUser, readJsonBody) {
   }
 
   try {
-    let body = {};
+    const validationLog = createValidationLogger('handleGrantConsent');
+    let rawBody = {};
     try {
-      body = await readJsonBody(req);
+      rawBody = await readJsonBody(req);
     } catch {
       // Empty body is OK - defaults will be used
     }
+    validationLog.beforeValidation(rawBody);
+
+    // Validate with Zod schema (all fields are optional with defaults)
+    const parseResult = GrantConsentSchema.safeParse(rawBody ?? {});
+    if (!parseResult.success) {
+      validationLog.validationFailed(parseResult.error.errors);
+      return sendJson(res, 400, {
+        error: 'Validation failed',
+        code: 'VALIDATION_FAILED',
+        errors: parseResult.error.errors
+      });
+    }
+
+    const body = parseResult.data;
+    validationLog.afterValidation(body);
 
     const consent = await grantConsent(authUser.id, authUser.organizationId, {
-      allowDealParsing: body.allowDealParsing !== false,
-      allowChatAssistant: body.allowChatAssistant !== false,
-      allowDocumentAnalysis: body.allowDocumentAnalysis !== false,
-      allowInsights: body.allowInsights !== false,
+      allowDealParsing: body.allowDealParsing,
+      allowChatAssistant: body.allowChatAssistant,
+      allowDocumentAnalysis: body.allowDocumentAnalysis,
+      allowInsights: body.allowInsights,
       ipAddress: req.headers['x-forwarded-for'] || req.socket?.remoteAddress,
       userAgent: req.headers['user-agent'],
       method: 'UI',
@@ -212,8 +231,16 @@ export async function handleUpdateFeatureConsent(req, res, authUser, readJsonBod
  * GET /api/ai-consent/policy
  *
  * Get the current AI consent policy.
+ *
+ * SECURITY: Requires authentication
  */
 export async function handleGetPolicy(req, res) {
+  // SECURITY: Require authentication
+  const authUser = await extractAuthUser(req);
+  if (!authUser) {
+    return sendError(res, 401, "Authentication required");
+  }
+
   try {
     const policy = await getCurrentPolicy();
 

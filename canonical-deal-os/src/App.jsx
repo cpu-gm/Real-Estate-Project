@@ -21,6 +21,10 @@ import LPUpdates from './pages/lp/LPUpdates';
 import LPUpdateDetail from './pages/lp/LPUpdateDetail';
 import ApiErrorOverlay from '@/components/dev/ApiErrorOverlay';
 import ErrorBoundary from '@/components/ErrorBoundary';
+// Public auth pages (must be imported directly, not from Pages config)
+import Login from './pages/Login';
+import Signup from './pages/Signup';
+import PendingVerification from './pages/PendingVerification';
 
 const { Pages, Layout, mainPage } = pagesConfig;
 const mainPageKey = mainPage ?? Object.keys(Pages)[0];
@@ -59,7 +63,7 @@ const LPUserApp = () => {
 };
 
 const AuthenticatedApp = () => {
-  const { user, isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
+  const { user, isAuthenticated, isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
 
   // Show loading spinner while checking app public settings or auth
   if (isLoadingPublicSettings || isLoadingAuth) {
@@ -81,6 +85,12 @@ const AuthenticatedApp = () => {
     }
   }
 
+  // Redirect to login if not authenticated (no user, no auth error)
+  // This handles the case when Base44 is not configured and no local auth token exists
+  if (!isAuthenticated && !user) {
+    return <Navigate to="/Login" replace />;
+  }
+
   // Check if user is an LP - route to LP-specific UI
   if (user?.role === 'LP') {
     return <LPUserApp />;
@@ -90,8 +100,14 @@ const AuthenticatedApp = () => {
   return (
     <Routes>
       <Route path="/" element={
-        <LayoutWrapper currentPageName={mainPageKey}>
-          <MainPage />
+        <LayoutWrapper currentPageName="HomeModern">
+          <Pages.HomeModern />
+        </LayoutWrapper>
+      } />
+      {/* Override /Home to use HomeModern */}
+      <Route path="/Home" element={
+        <LayoutWrapper currentPageName="HomeModern">
+          <Pages.HomeModern />
         </LayoutWrapper>
       } />
       {Object.entries(Pages).map(([path, Page]) => (
@@ -105,6 +121,17 @@ const AuthenticatedApp = () => {
           }
         />
       ))}
+      {/* Onboarding routes with parameters */}
+      <Route path="/onboarding" element={<LayoutWrapper currentPageName="OrgOnboarding"><Pages.OrgOnboarding /></LayoutWrapper>} />
+      <Route path="/onboarding/wizard" element={<LayoutWrapper currentPageName="OrgOnboardingWizard"><Pages.OrgOnboardingWizard /></LayoutWrapper>} />
+      <Route path="/onboarding/status" element={<LayoutWrapper currentPageName="OnboardingStatus"><Pages.OnboardingStatus /></LayoutWrapper>} />
+      <Route path="/onboarding/status/:sessionId" element={<LayoutWrapper currentPageName="OnboardingStatus"><Pages.OnboardingStatus /></LayoutWrapper>} />
+      <Route path="/onboarding/review" element={<LayoutWrapper currentPageName="OnboardingReviewQueue"><Pages.OnboardingReviewQueue /></LayoutWrapper>} />
+      <Route path="/onboarding/links" element={<LayoutWrapper currentPageName="OnboardingDataLinks"><Pages.OnboardingDataLinks /></LayoutWrapper>} />
+      <Route path="/admin/onboarding" element={<LayoutWrapper currentPageName="AdminOnboardingQueue"><Pages.AdminOnboardingQueue /></LayoutWrapper>} />
+      <Route path="/admin/onboarding/:sessionId" element={<LayoutWrapper currentPageName="AdminOnboardingDetail"><Pages.AdminOnboardingDetail /></LayoutWrapper>} />
+      {/* Quick Import route */}
+      <Route path="/import/quick" element={<LayoutWrapper currentPageName="QuickImport"><Pages.QuickImport /></LayoutWrapper>} />
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );
@@ -119,6 +146,10 @@ function App() {
         <Router>
           <NavigationTracker />
           <Routes>
+            {/* Public auth pages - rendered outside AuthenticatedApp to prevent redirect loops */}
+            <Route path="/Login" element={<ErrorBoundary><Login /></ErrorBoundary>} />
+            <Route path="/Signup" element={<ErrorBoundary><Signup /></ErrorBoundary>} />
+            <Route path="/PendingVerification" element={<ErrorBoundary><PendingVerification /></ErrorBoundary>} />
             {/* Public portal routes (no auth required, token-based access) */}
             <Route
               path="/portal/lender"

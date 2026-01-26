@@ -1,23 +1,46 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, Search, FolderOpen } from "lucide-react";
+import { Plus, Search, FolderOpen, Bell } from "lucide-react";
 import { DealDraftCard } from "@/components/intake/DealDraftCard";
 import { useIntakeDashboard } from "@/lib/hooks/useIntakeDashboard";
 import { createPageUrl } from "@/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { debugLog } from "@/lib/debug";
+import { bff } from "@/api/bffClient";
+import { useRole } from "@/Layout";
+import { useAuth } from "@/lib/AuthContext";
+import BrokerInvitationCard from "@/components/broker/BrokerInvitationCard";
 
 export default function DealDrafts() {
   const navigate = useNavigate();
+  const { currentRole } = useRole();
+  const { user } = useAuth();
   const [statusFilter, setStatusFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Check if user is a broker - use actual user role, not UI role-switcher
+  const isBroker = user?.role === 'Broker';
+  console.log('[DealDrafts] Role check', { userRole: user?.role, currentRole, isBroker });
 
   const { drafts, isLoading, derivedStats } = useIntakeDashboard(
     statusFilter !== "all" ? { status: statusFilter } : {}
   );
+
+  // Fetch broker invitations (for brokers only)
+  const invitationsQuery = useQuery({
+    queryKey: ['brokerInvitations'],
+    queryFn: () => bff.brokerInvitations.list(),
+    enabled: isBroker,
+    staleTime: 30000
+  });
+
+  const pendingInvitations = invitationsQuery.data?.invitations?.filter(
+    inv => inv.status === 'PENDING'
+  ) || [];
 
   const filteredDrafts = drafts.filter((draft) => {
     if (!searchQuery) return true;
@@ -49,12 +72,38 @@ export default function DealDrafts() {
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Deal Intake</h1>
-        <Button onClick={handleCreate}>
-          <Plus className="w-4 h-4 mr-2" />
-          New Deal Draft
-        </Button>
+        <h1 className="text-2xl font-bold">
+          {isBroker ? 'My Listings' : 'Deal Intake'}
+        </h1>
+        {!isBroker && (
+          <Button onClick={handleCreate}>
+            <Plus className="w-4 h-4 mr-2" />
+            New Deal Draft
+          </Button>
+        )}
       </div>
+
+      {/* Pending Invitations Section (Brokers only) */}
+      {isBroker && pendingInvitations.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-4">
+            <Bell className="w-5 h-5 text-amber-500" />
+            <h2 className="text-lg font-semibold">
+              Pending Invitations ({pendingInvitations.length})
+            </h2>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {pendingInvitations.map((invitation) => (
+              <BrokerInvitationCard key={invitation.id} invitation={invitation} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Active Listings / Deal Drafts Section */}
+      {isBroker && pendingInvitations.length > 0 && filteredDrafts.length > 0 && (
+        <h2 className="text-lg font-semibold mb-4">Active Listings</h2>
+      )}
 
       <div className="flex items-center gap-4 mb-6">
         <div className="relative flex-1 max-w-sm">
@@ -79,14 +128,24 @@ export default function DealDrafts() {
       {filteredDrafts.length === 0 ? (
         <div className="py-12 text-center">
           <FolderOpen className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No deals found</h3>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">
+            {isBroker ? 'No active listings' : 'No deals found'}
+          </h3>
           <p className="text-sm text-gray-500 mb-4">
-            {searchQuery ? "Try a different search term" : "Create your first deal draft to get started"}
+            {searchQuery
+              ? "Try a different search term"
+              : isBroker
+                ? pendingInvitations.length > 0
+                  ? "Accept an invitation above to start listing"
+                  : "You don't have any listings yet"
+                : "Create your first deal draft to get started"}
           </p>
-          <Button onClick={handleCreate}>
-            <Plus className="w-4 h-4 mr-2" />
-            Create Deal Draft
-          </Button>
+          {!isBroker && (
+            <Button onClick={handleCreate}>
+              <Plus className="w-4 h-4 mr-2" />
+              Create Deal Draft
+            </Button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

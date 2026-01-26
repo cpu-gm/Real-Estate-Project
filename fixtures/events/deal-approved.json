@@ -1,11 +1,22 @@
 {
+  "_meta": {
+    "source": "POST /kernel/deals/:dealId/events",
+    "schema": "kernelEventWithPayloadSchema",
+    "createdAt": "2026-01-21"
+  },
   "_comment": "Kernel event: Deal approved by GP - transitions from UnderReview to Approved",
   "type": "DealApproved",
   "_type_comment": "This is a GATED event - requires authority validation and material requirements",
   "actorId": "550e8400-e29b-41d4-a716-446655440001",
   "_actorId_comment": "UUID of the GP who approved the deal",
   "payload": {
-    "_comment": "Approval-specific data",
+    "_comment": "Approval-specific data with required context fields",
+    "dealId": "550e8400-e29b-41d4-a716-446655440000",
+    "_dealId_comment": "UUID of the deal being approved - required for traceability",
+    "orgId": "org-550e8400-e29b-41d4-a716-446655440099",
+    "_orgId_comment": "Organization ID - required for multi-tenant isolation",
+    "timestamp": "2026-01-21T14:30:00.000Z",
+    "_timestamp_comment": "ISO timestamp of approval - required for audit trail",
     "approvalNotes": "All underwriting materials verified and approved",
     "_approvalNotes_comment": "Optional notes from the approver"
   },

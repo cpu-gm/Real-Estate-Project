@@ -1,0 +1,159 @@
+{
+  "lastUpdated": "2026-01-25T21:34:29.871Z",
+  "latestError": {
+    "timestamp": "2026-01-25T21:34:29.871Z",
+    "error": {
+      "requestId": "1ff6a04b",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found",
+      "suggestion": "The requested resource does not exist. Verify the ID is correct",
+      "stack": null
+    },
+    "sourceContext": {
+      "routeFile": "server/routes/notifications.js",
+      "handlerFunction": "notification handlers",
+      "errorLocation": null,
+      "relevantCode": null,
+      "stackLocations": []
+    },
+    "request": {
+      "authUser": null,
+      "params": null,
+      "query": null,
+      "body": null
+    },
+    "gitContext": {
+      "recentCommits": [
+        "ab66ef7 Add listing workflow with broker invitation and management UI",
+        "f81e24c Add monorepo structure, contract system, and CI guardrails",
+        "7bdda43 monorepo"
+      ],
+      "uncommittedChanges": null,
+      "routeFileChanged": false
+    },
+    "dbContext": {
+      "affectedModels": []
+    },
+    "suggestedFix": {
+      "type": "resource",
+      "description": "Resource does not exist",
+      "steps": [
+        "1. Verify the ID format (should be UUID)",
+        "2. Check if resource was deleted",
+        "3. Verify database has the record"
+      ],
+      "codeExample": "// Check resource exists before operations\nif (!resource) {\n  throw ApiError.notFound('Deal');\n}"
+    },
+    "replay": {
+      "url": "http://localhost:8787/api/notifications/count",
+      "method": "GET",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer <YOUR_TOKEN>"
+      },
+      "body": null,
+      "curlCommand": "curl -X GET \"http://localhost:8787/api/notifications/count\" \\\n  -H \"Content-Type: application/json\" \\\n  -H \"Authorization: Bearer <YOUR_TOKEN>\"",
+      "fetchCode": "// Replay this request in browser console\nconst token = localStorage.getItem('token'); // or paste your token\nconst response = await fetch(\"http://localhost:8787/api/notifications/count\", {\n  method: \"GET\",\n  headers: {\n    \"Content-Type\": \"application/json\",\n    \"Authorization\": \"Bearer \" + token\n  }\n});\nconst data = await response.json();\nconsole.log(response.status, data);",
+      "instructions": [
+        "1. Copy the curlCommand or fetchCode",
+        "2. Replace <YOUR_TOKEN> with a valid auth token",
+        "3. Run the command to verify the fix works"
+      ]
+    }
+  },
+  "recentErrors": [
+    {
+      "timestamp": "2026-01-25T21:34:29.871Z",
+      "requestId": "1ff6a04b",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    },
+    {
+      "timestamp": "2026-01-25T21:02:59.952Z",
+      "requestId": "663e149c",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    },
+    {
+      "timestamp": "2026-01-25T21:00:29.709Z",
+      "requestId": "949bb5ed",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    },
+    {
+      "timestamp": "2026-01-25T20:59:59.372Z",
+      "requestId": "8048a780",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    },
+    {
+      "timestamp": "2026-01-25T20:59:33.735Z",
+      "requestId": "1ab41066",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    },
+    {
+      "timestamp": "2026-01-25T20:58:52.733Z",
+      "requestId": "b0e9ca3a",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    },
+    {
+      "timestamp": "2026-01-25T20:58:34.755Z",
+      "requestId": "0d823873",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    },
+    {
+      "timestamp": "2026-01-25T20:50:41.765Z",
+      "requestId": "a1320d06",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    },
+    {
+      "timestamp": "2026-01-25T20:50:11.746Z",
+      "requestId": "f8c418a1",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    },
+    {
+      "timestamp": "2026-01-25T20:46:59.362Z",
+      "requestId": "0b0a243c",
+      "method": "GET",
+      "path": "/api/notifications/count",
+      "status": 404,
+      "code": "NOT_FOUND",
+      "message": "Not found"
+    }
+  ]
+}

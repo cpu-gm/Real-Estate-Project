@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "n8n-mcp-docs": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://czlonkowskin8n-mcp-railwaylatest-production-5c7e.up.railway.app/mcp",
+        "--header",
+        "Authorization:${AUTH_HEADER}"
+      ],
+      "env": {
+        "AUTH_HEADER": "Bearer REPLACE_THIS_AUTH_TOKEN_32_CHARS_MIN_abcdefgh"
+      }
+    },
+    "n8n-instance": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://primary-production-6992.up.railway.app/mcp-server/http",
+        "--header",
+        "Authorization:${N8N_AUTH}"
+      ],
+      "env": {
+        "N8N_AUTH": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxZmQ3NjQzYi03Yjk5LTQzMjMtOTdlNy1mMDAzMDAzN2QxYTQiLCJpc3MiOiJuOG4iLCJhdWQiOiJtY3Atc2VydmVyLWFwaSIsImp0aSI6ImFiNTk5ZWI1LTUwNzQtNDE1OC1iOGQwLTBjNjM0MTNkNGU2YSIsImlhdCI6MTc2OTEwOTEyNn0.uhbWmesQ9kx7jQZeipykB0bKrGs-ks-S_gXG8rIbmuI"
+      }
+    }
+  }
+}

@@ -29,6 +29,19 @@ import {
   rejectDocumentMatch,
 } from '../services/ai/dd-checklist-assistant.js';
 import { getPrisma } from '../db.js';
+import { createValidationLogger } from '../services/validation-logger.js';
+import {
+  InitializeChecklistSchema,
+  UpdateDDItemSchema,
+  AssignDDItemSchema,
+  LinkDocumentSchema,
+  VerifyDDItemSchema,
+  MarkNASchema,
+  AddCustomDDItemSchema,
+  ProcessDocumentSchema,
+  ApproveMatchSchema,
+  RejectMatchSchema
+} from '../middleware/route-schemas.js';
 
 const log = createLogger('DD-API');
 
@@ -54,30 +67,50 @@ function sendError(res, status, message, details = null) {
 export async function handleInitializeChecklist(req, res, dealId, authUser, readJsonBody) {
   log.info('Initialize checklist request', { dealId, userId: authUser.id });
 
-  try {
-    const body = await readJsonBody(req);
+  const body = await readJsonBody(req);
 
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleInitializeChecklist');
+  validationLog.beforeValidation(body);
+
+  const parsed = InitializeChecklistSchema.safeParse(body || {});
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  try {
     // Get deal dates if not provided
-    let psaEffectiveDate = body.psaEffectiveDate;
-    let ddExpirationDate = body.ddExpirationDate;
-    let targetClosingDate = body.targetClosingDate;
+    let psaEffectiveDate = parsed.data.psaEffectiveDate;
+    let ddExpirationDate = parsed.data.ddExpirationDate;
+    let targetClosingDate = parsed.data.targetClosingDate;
 
     if (!psaEffectiveDate || !ddExpirationDate || !targetClosingDate) {
-      // Try to get from deal
+      // Try to get dates from existing DDChecklist (Deal model lives in Kernel, not BFF)
       const prisma = getPrisma();
-      const deal = await prisma.deal.findUnique({
-        where: { id: dealId },
+      const existingChecklist = await prisma.dDChecklist.findUnique({
+        where: { dealId },
         select: {
-          effectiveDate: true,
+          psaEffectiveDate: true,
           ddExpirationDate: true,
           targetClosingDate: true,
         }
       });
 
-      if (deal) {
-        psaEffectiveDate = psaEffectiveDate || deal.effectiveDate;
-        ddExpirationDate = ddExpirationDate || deal.ddExpirationDate;
-        targetClosingDate = targetClosingDate || deal.targetClosingDate;
+      if (existingChecklist) {
+        psaEffectiveDate = psaEffectiveDate || existingChecklist.psaEffectiveDate;
+        ddExpirationDate = ddExpirationDate || existingChecklist.ddExpirationDate;
+        targetClosingDate = targetClosingDate || existingChecklist.targetClosingDate;
       }
     }
 
@@ -232,19 +265,30 @@ export async function handleGetItem(req, res, dealId, itemId, authUser) {
 export async function handleUpdateItem(req, res, dealId, itemId, authUser, readJsonBody) {
   log.info('Update item request', { dealId, itemId, userId: authUser.id });
 
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleUpdateItem');
+  validationLog.beforeValidation(body);
+
+  const parsed = UpdateDDItemSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    const body = await readJsonBody(req);
-    const { status, notes } = body;
-
-    if (!status) {
-      return sendError(res, 400, 'status is required');
-    }
-
-    const validStatuses = ['NOT_STARTED', 'IN_PROGRESS', 'WAITING', 'BLOCKED', 'COMPLETE', 'N/A'];
-    if (!validStatuses.includes(status)) {
-      return sendError(res, 400, `Invalid status. Must be one of: ${validStatuses.join(', ')}`);
-    }
-
+    const { status, notes } = parsed.data;
     const userName = authUser.email || authUser.name || authUser.id;
     const item = await updateItemStatus(itemId, status, authUser.id, userName, notes);
 
@@ -264,14 +308,30 @@ export async function handleUpdateItem(req, res, dealId, itemId, authUser, readJ
 export async function handleAssignItem(req, res, dealId, itemId, authUser, readJsonBody) {
   log.info('Assign item request', { dealId, itemId, userId: authUser.id });
 
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleAssignItem');
+  validationLog.beforeValidation(body);
+
+  const parsed = AssignDDItemSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    const body = await readJsonBody(req);
-    const { assigneeUserId, assigneeName } = body;
-
-    if (!assigneeUserId || !assigneeName) {
-      return sendError(res, 400, 'assigneeUserId and assigneeName are required');
-    }
-
+    const { assigneeUserId, assigneeName } = parsed.data;
     const item = await assignItem(itemId, assigneeUserId, assigneeName, authUser.id);
 
     log.info('Item assigned', { itemId, assignee: assigneeName });
@@ -290,14 +350,30 @@ export async function handleAssignItem(req, res, dealId, itemId, authUser, readJ
 export async function handleLinkDocument(req, res, dealId, itemId, authUser, readJsonBody) {
   log.info('Link document request', { dealId, itemId, userId: authUser.id });
 
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleLinkDocument');
+  validationLog.beforeValidation(body);
+
+  const parsed = LinkDocumentSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    const body = await readJsonBody(req);
-    const { documentId } = body;
-
-    if (!documentId) {
-      return sendError(res, 400, 'documentId is required');
-    }
-
+    const { documentId } = parsed.data;
     const item = await linkDocument(itemId, documentId, authUser.id);
 
     log.info('Document linked', { itemId, documentId });
@@ -316,10 +392,30 @@ export async function handleLinkDocument(req, res, dealId, itemId, authUser, rea
 export async function handleVerifyItem(req, res, dealId, itemId, authUser, readJsonBody) {
   log.info('Verify item request', { dealId, itemId, userId: authUser.id });
 
-  try {
-    const body = await readJsonBody(req);
-    const { notes } = body;
+  const body = await readJsonBody(req);
 
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleVerifyItem');
+  validationLog.beforeValidation(body);
+
+  const parsed = VerifyDDItemSchema.safeParse(body || {});
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
+  try {
+    const { notes } = parsed.data;
     const userName = authUser.email || authUser.name || authUser.id;
     const item = await markAsVerified(itemId, authUser.id, userName, notes);
 
@@ -339,14 +435,30 @@ export async function handleVerifyItem(req, res, dealId, itemId, authUser, readJ
 export async function handleMarkNA(req, res, dealId, itemId, authUser, readJsonBody) {
   log.info('Mark N/A request', { dealId, itemId, userId: authUser.id });
 
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleMarkNA');
+  validationLog.beforeValidation(body);
+
+  const parsed = MarkNASchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    const body = await readJsonBody(req);
-    const { reason } = body;
-
-    if (!reason) {
-      return sendError(res, 400, 'reason is required to mark item as N/A');
-    }
-
+    const { reason } = parsed.data;
     const item = await markItemNA(itemId, reason, authUser.id);
 
     log.info('Item marked N/A', { itemId, reason });
@@ -365,13 +477,29 @@ export async function handleMarkNA(req, res, dealId, itemId, authUser, readJsonB
 export async function handleAddCustomItem(req, res, dealId, authUser, readJsonBody) {
   log.info('Add custom item request', { dealId, userId: authUser.id });
 
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleAddCustomItem');
+  validationLog.beforeValidation(body);
+
+  const parsed = AddCustomDDItemSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    const body = await readJsonBody(req);
-
-    if (!body.title) {
-      return sendError(res, 400, 'title is required');
-    }
-
     // Get checklist ID
     const prisma = getPrisma();
     const checklist = await prisma.dDChecklist.findUnique({
@@ -382,7 +510,7 @@ export async function handleAddCustomItem(req, res, dealId, authUser, readJsonBo
       return sendError(res, 404, 'DD checklist not found. Initialize checklist first.');
     }
 
-    const item = await addCustomItem(checklist.id, body, authUser.id);
+    const item = await addCustomItem(checklist.id, parsed.data, authUser.id);
 
     log.info('Custom item added', { itemId: item.id, code: item.code });
     sendJson(res, 201, { item });
@@ -519,12 +647,31 @@ export async function handleGetSummary(req, res, dealId, authUser, url) {
  */
 export async function handleProcessDocument(req, res, dealId, authUser, readJsonBody) {
   log.info('Process document request', { dealId, userId: authUser.id });
+
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleProcessDocument');
+  validationLog.beforeValidation(body);
+
+  const parsed = ProcessDocumentSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    const body = await readJsonBody(req);
-    if (!body.documentId) {
-      return sendError(res, 400, 'documentId is required');
-    }
-    const result = await autoProcessDocument(dealId, body.documentId, body.options || {});
+    const result = await autoProcessDocument(dealId, parsed.data.documentId, parsed.data.options || {});
     sendJson(res, 200, result);
   } catch (error) {
     log.error('Failed to process document', { dealId, error: error.message });
@@ -553,9 +700,31 @@ export async function handleGetPendingApprovals(req, res, dealId, authUser) {
  */
 export async function handleApproveMatch(req, res, dealId, approvalId, authUser, readJsonBody) {
   log.info('Approve match request', { dealId, approvalId, userId: authUser.id });
+
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleApproveMatch');
+  validationLog.beforeValidation(body);
+
+  const parsed = ApproveMatchSchema.safeParse(body || {});
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    const body = await readJsonBody(req);
-    const result = await approveDocumentMatch(approvalId, authUser.id, body || {});
+    const result = await approveDocumentMatch(approvalId, authUser.id, parsed.data);
     sendJson(res, 200, result);
   } catch (error) {
     log.error('Failed to approve match', { approvalId, error: error.message });
@@ -569,12 +738,31 @@ export async function handleApproveMatch(req, res, dealId, approvalId, authUser,
  */
 export async function handleRejectMatch(req, res, dealId, approvalId, authUser, readJsonBody) {
   log.info('Reject match request', { dealId, approvalId, userId: authUser.id });
+
+  const body = await readJsonBody(req);
+
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleRejectMatch');
+  validationLog.beforeValidation(body);
+
+  const parsed = RejectMatchSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
+  }
+
+  validationLog.afterValidation(parsed.data);
+  // ================================
+
   try {
-    const body = await readJsonBody(req);
-    if (!body.reason) {
-      return sendError(res, 400, 'reason is required to reject a match');
-    }
-    const result = await rejectDocumentMatch(approvalId, authUser.id, body.reason);
+    const result = await rejectDocumentMatch(approvalId, authUser.id, parsed.data.reason);
     sendJson(res, 200, result);
   } catch (error) {
     log.error('Failed to reject match', { approvalId, error: error.message });

@@ -305,6 +305,20 @@ fix: Correct org isolation in capital calls query
 docs: Update ARCHITECTURE.md with auth flow
 ```
 
+### Contract Change Checklist
+
+When modifying API contracts, complete this checklist before submitting PR:
+
+- [ ] **Schema updated** - Modified `canonical-deal-os/src/contracts/` or `src/lib/contracts.js`
+- [ ] **Fixture updated** - Updated/added fixture in `fixtures/http/` or `fixtures/events/`
+- [ ] **Manifest updated** - Added fixture→schema mapping in `contracts/manifest.json`
+- [ ] **CI passes** - Run `npm run contracts:check` locally
+- [ ] **Backward compatibility** - Existing consumers won't break
+  - Adding optional fields: OK
+  - Adding required fields: Requires version bump (see versioning convention)
+  - Removing/renaming fields: Requires version bump
+- [ ] **Re-export updated** - If migrating schema, update `contracts/schemas.js`
+
 ### CI Requirements
 
 All PRs must pass:

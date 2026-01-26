@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "_comment": "Strict mapping of every fixture to its schema. Validation FAILS if any fixture is unmapped.",
+  "_source": "Schemas re-exported from /contracts/schemas.js (canonical: canonical-deal-os/src/lib/contracts.js)",
+
+  "http": {
+    "create-deal-request.json": {
+      "schema": "createDealRequestSchema",
+      "description": "Request body for POST /api/deals"
+    },
+    "create-deal-response.json": {
+      "schema": "dealSchema",
+      "description": "Response body from POST /api/deals"
+    },
+    "lp-invitation-request.json": {
+      "schema": "lpInvitationRequestSchema",
+      "description": "Request body for POST /api/lp/invite"
+    },
+    "explain-blocked-response.json": {
+      "schema": "explainBlockSchema",
+      "description": "Response when kernel blocks an action"
+    },
+    "deal-with-org-context.json": {
+      "schema": "dealWithOrgContextSchema",
+      "description": "Deal response with organizationId - multi-tenant isolation invariant"
+    },
+    "om-generate-request.json": {
+      "schema": "omGenerateRequestSchema",
+      "description": "Request body for POST /api/om/draft/:dealDraftId/generate"
+    },
+    "om-version-response.json": {
+      "schema": "omVersionSchema",
+      "description": "Response body from OM generate/get endpoints"
+    },
+    "distribution-create-request.json": {
+      "schema": "createDistributionRequestSchema",
+      "description": "Request body for POST /api/distribution/create/:dealDraftId"
+    },
+    "distribution-create-response.json": {
+      "schema": "createDistributionResponseSchema",
+      "description": "Response body from distribution create endpoint"
+    }
+  },
+
+  "events": {
+    "review-opened.json": {
+      "schema": "kernelEventSchema",
+      "description": "Kernel event: Deal enters review stage (base schema)"
+    },
+    "deal-approved.json": {
+      "schema": "kernelEventWithPayloadSchema",
+      "description": "Kernel event: Deal approved by GP (extended schema with payload validation)"
+    }
+  }
+}

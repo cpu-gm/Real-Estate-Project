@@ -589,24 +589,53 @@ class DealIngestService {
       status,
       brokerId,
       userId, // New: show deals where user is broker OR seller
+      userEmail, // NEW: for cross-org broker invitation lookup
       limit = 50,
       offset = 0
     } = options;
 
-    const where = { organizationId };
+    // Build conditions for deals user should see
+    // This enables cross-org collaboration (e.g., brokers invited from different orgs)
+
+    // User can see deals where:
+    // 1. They are an assigned broker on the deal, OR
+    // 2. They are the seller on the deal, OR
+    // 3. They have a pending/accepted broker invitation (cross-org), OR
+    // 4. The deal is in their organization (for GPs/admins)
+
+    const accessConditions = [];
+
+    // For users with userId (always), check broker/seller assignment
+    if (userId) {
+      accessConditions.push({ brokers: { some: { userId } } });
+      accessConditions.push({ seller: { userId } });
+    }
+
+    // For users with email, check broker invitations (enables cross-org)
+    // Note: SQLite's LIKE is case-insensitive by default for ASCII
+    // We normalize to lowercase for consistent matching
+    if (userEmail) {
+      accessConditions.push({
+        brokerInvitations: {
+          some: {
+            brokerEmail: userEmail.toLowerCase(),
+            status: { in: ['PENDING', 'ACCEPTED'] }
+          }
+        }
+      });
+    }
+
+    // Always include org-level access (for GPs viewing all deals in their org)
+    accessConditions.push({ organizationId });
+
+    const where = { OR: accessConditions };
 
     if (status) {
       where.status = status;
     }
 
-    // If userId provided, show deals where user is either broker or seller
-    if (userId) {
-      where.OR = [
-        { brokers: { some: { userId } } },
-        { seller: { userId } }
-      ];
-    } else if (brokerId) {
-      // Legacy: only filter by broker
+    // Legacy brokerId filter (if no userId provided)
+    if (!userId && brokerId) {
       where.brokers = {
         some: { userId: brokerId }
       };
@@ -615,6 +644,7 @@ class DealIngestService {
     console.log('[DealIngestService] listDealDrafts query', {
       organizationId,
       userId,
+      userEmail,
       where: JSON.stringify(where, null, 2)
     });
 
@@ -623,7 +653,8 @@ class DealIngestService {
         where,
         include: {
           brokers: { where: { isPrimaryContact: true } },
-          seller: true
+          seller: true,
+          brokerInvitations: true // Include invitations for UI to show status
         },
         orderBy: { createdAt: 'desc' },
         skip: offset,

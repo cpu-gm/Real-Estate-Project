@@ -14,7 +14,7 @@ import {
   dataTrustResponseSchema,
   inboxResponseSchema
 } from "@/lib/contracts";
-import { createApiError } from "@/lib/api-error";
+import { createApiError, ErrorCode } from "@/lib/api-error";
 import { debugLog } from "@/lib/debug";
 import {
   ClaimVerifyRequest,
@@ -120,16 +120,34 @@ async function requestJson(path, options = {}) {
   }
 
   if (!response.ok) {
-    const errorMessage = data?.message || data?.error || `Request failed (${response.status})`;
-    const error = new Error(errorMessage);
-    error.status = response.status;
-    error.data = data;
+    // Parse new standardized error format: { error: { code, message, details, suggestion, field }, timestamp, requestId }
+    const errorPayload = data?.error || {};
+    const errorCode = errorPayload.code || (response.status === 401 ? ErrorCode.AUTH_REQUIRED : ErrorCode.INTERNAL_ERROR);
+    const errorMessage = errorPayload.message || data?.message || data?.error || `Request failed (${response.status})`;
+    const suggestion = errorPayload.suggestion || null;
+    const field = errorPayload.field || null;
+    const details = errorPayload.details || data?.details || null;
+    const requestId = data?.requestId || response.headers.get('X-Request-Id') || null;
 
     debugLog("bff", "Request failed", {
       method: options.method || "GET",
       path,
       status: response.status,
-      message: errorMessage
+      code: errorCode,
+      message: errorMessage,
+      requestId
+    });
+
+    // Create structured ApiError
+    const error = createApiError({
+      message: errorMessage,
+      status: response.status,
+      endpoint: path,
+      code: errorCode,
+      suggestion,
+      field,
+      details,
+      debugDetails: { requestId, rawResponse: data }
     });
 
     // Report to dev overlay
@@ -138,8 +156,11 @@ async function requestJson(path, options = {}) {
         method: options.method || 'GET',
         path,
         status: response.status,
+        code: errorCode,
         message: errorMessage,
-        details: data?.details || null,
+        details,
+        suggestion,
+        requestId
       });
     }
 
@@ -200,6 +221,31 @@ export const bff = {
   home: {
     getData: async () => {
       const data = await requestJson("/home");
+      return data;
+    }
+  },
+  // Organization users (for UserPicker and bulk operations)
+  users: {
+    list: async (search = '', role = '') => {
+      const params = new URLSearchParams();
+      if (search) params.set('search', search);
+      if (role) params.set('role', role);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/users${query}`);
+      return data.users || [];
+    },
+    recent: async () => {
+      const data = await requestJson('/users/recent');
+      return data.users || [];
+    }
+  },
+  // Bulk operations
+  bulk: {
+    assignDeals: async (dealIds, userId, userName, role = 'analyst') => {
+      const data = await requestJson('/deals/bulk/assign', {
+        method: 'POST',
+        body: JSON.stringify({ dealIds, userId, userName, role })
+      });
       return data;
     }
   },
@@ -640,6 +686,141 @@ export const bff = {
         method: "DELETE"
       });
       return data;
+    },
+    // Access control
+    checkAccess: async (id) => {
+      const path = `/intake/draft/${id}/access`;
+      const data = await requestJson(path);
+      // Returns { relation, permissions, invitation }
+      return data;
+    }
+  },
+  // Broker invitation management
+  brokerInvitations: {
+    list: async () => {
+      const path = `/intake/invitations`;
+      const data = await requestJson(path);
+      // Returns { invitations: [...] }
+      return data;
+    },
+    accept: async (invitationId) => {
+      const path = `/intake/invitation/${invitationId}/accept`;
+      const data = await requestJson(path, {
+        method: "POST"
+      });
+      // Returns { success, message, dealDraftId }
+      return data;
+    },
+    decline: async (invitationId) => {
+      const path = `/intake/invitation/${invitationId}/decline`;
+      const data = await requestJson(path, {
+        method: "POST"
+      });
+      // Returns { success, message }
+      return data;
+    },
+    // Commission negotiation methods
+    getNegotiations: async (invitationId) => {
+      const path = `/intake/invitation/${invitationId}/negotiations`;
+      const data = await requestJson(path);
+      // Returns { negotiations, invitationStatus, negotiationStatus, sellerTerms }
+      return data;
+    },
+    counterOffer: async (invitationId, terms) => {
+      const path = `/intake/invitation/${invitationId}/counter-offer`;
+      const data = await requestJson(path, {
+        method: "POST",
+        body: JSON.stringify(terms)
+      });
+      // Returns { success, negotiation, round, warning }
+      return data;
+    },
+    acceptNegotiation: async (negotiationId) => {
+      const path = `/intake/negotiation/${negotiationId}/accept`;
+      const data = await requestJson(path, {
+        method: "POST"
+      });
+      // Returns { success, message, agreedTerms }
+      return data;
+    },
+    negotiateLater: async (invitationId) => {
+      const path = `/intake/invitation/${invitationId}/negotiate-later`;
+      const data = await requestJson(path, {
+        method: "POST"
+      });
+      // Returns { success, message }
+      return data;
+    }
+  },
+  // Listing configuration methods
+  listingConfig: {
+    get: async (dealDraftId) => {
+      const path = `/intake/draft/${dealDraftId}/listing-config`;
+      const data = await requestJson(path);
+      // Returns { config }
+      return data;
+    },
+    save: async (dealDraftId, config) => {
+      const path = `/intake/draft/${dealDraftId}/listing-config`;
+      const data = await requestJson(path, {
+        method: "POST",
+        body: JSON.stringify(config)
+      });
+      // Returns { config, message }
+      return data;
+    }
+  },
+  // Listing agreement methods
+  listingAgreement: {
+    confirm: async (dealDraftId, agreementId, role) => {
+      const path = `/intake/draft/${dealDraftId}/agreement/confirm`;
+      const data = await requestJson(path, {
+        method: "POST",
+        body: JSON.stringify({ agreementId, role })
+      });
+      // Returns { success, agreement, bothConfirmed, message }
+      return data;
+    }
+  },
+  // Broker dashboard methods
+  broker: {
+    getDashboard: async () => {
+      const path = `/broker/dashboard`;
+      const data = await requestJson(path);
+      // Returns { summary, listings, aggregateFunnel }
+      return data;
+    },
+    getActivity: async (params = {}) => {
+      const queryString = new URLSearchParams(params).toString();
+      const path = `/broker/activity${queryString ? `?${queryString}` : ''}`;
+      const data = await requestJson(path);
+      // Returns { activities }
+      return data;
+    },
+    getUnreadCount: async () => {
+      const path = `/broker/unread-count`;
+      const data = await requestJson(path);
+      // Returns { count }
+      return data;
+    },
+    getNewInquiries: async (params = {}) => {
+      const queryString = new URLSearchParams(params).toString();
+      const path = `/broker/new-inquiries${queryString ? `?${queryString}` : ''}`;
+      const data = await requestJson(path);
+      // Returns { count, inquiries }
+      return data;
+    },
+    getListingInquiries: async (dealDraftId) => {
+      const path = `/broker/listings/${dealDraftId}/inquiries`;
+      const data = await requestJson(path);
+      // Returns { inquiries }
+      return data;
+    },
+    getInquiryThread: async (dealDraftId, buyerUserId) => {
+      const path = `/broker/inquiry/${dealDraftId}/${buyerUserId}/thread`;
+      const data = await requestJson(path);
+      // Returns { conversationId, isNew }
+      return data;
     }
   },
   om: {
@@ -990,6 +1171,23 @@ export const bff = {
         method: "POST",
         schemaName: "BuyerAuthorization"
       });
+    },
+    // Bulk operations
+    bulkAuthorize: async (dealDraftId, buyerUserIds) => {
+      const path = `/gate/bulk/authorize/${dealDraftId}`;
+      const data = await requestJson(path, {
+        method: "POST",
+        body: JSON.stringify({ buyerUserIds })
+      });
+      return data; // { succeeded: string[], failed: { id, error }[] }
+    },
+    bulkDecline: async (dealDraftId, buyerUserIds, reason = 'Not a fit') => {
+      const path = `/gate/bulk/decline/${dealDraftId}`;
+      const data = await requestJson(path, {
+        method: "POST",
+        body: JSON.stringify({ buyerUserIds, reason })
+      });
+      return data; // { succeeded: string[], failed: { id, error }[] }
     },
     revoke: async (dealDraftId, buyerUserId, reason) => {
       GateRevokeRequest.parse({ reason });
@@ -2004,6 +2202,803 @@ export const bff = {
       const data = await requestJson(`/deals/${dealId}/validate-benchmarks`, {
         method: "POST",
         body: JSON.stringify({ sector, metrics })
+      });
+      return data;
+    }
+  },
+
+  // Contact/Vendor Database
+  contacts: {
+    // List contacts with filtering and pagination
+    list: async ({ contactType, status, search, isOrgPreferred, page, limit } = {}) => {
+      const params = new URLSearchParams();
+      if (contactType) params.set('contactType', contactType);
+      if (status) params.set('status', status);
+      if (search) params.set('search', search);
+      if (isOrgPreferred !== undefined) params.set('isOrgPreferred', String(isOrgPreferred));
+      if (page) params.set('page', String(page));
+      if (limit) params.set('limit', String(limit));
+      const query = params.toString();
+      const data = await requestJson(`/contacts${query ? `?${query}` : ''}`);
+      return data;
+    },
+
+    // Search contacts (for picker component)
+    search: async (q, { contactType, limit } = {}) => {
+      const params = new URLSearchParams();
+      params.set('q', q);
+      if (contactType) params.set('type', contactType);
+      if (limit) params.set('limit', String(limit));
+      const query = params.toString();
+      const data = await requestJson(`/contacts/search?${query}`);
+      return data;
+    },
+
+    // Get recent contacts (for picker component)
+    recent: async (contactType = null, limit = 10) => {
+      const params = new URLSearchParams();
+      if (contactType) params.set('type', contactType);
+      params.set('limit', String(limit));
+      const query = params.toString();
+      const data = await requestJson(`/contacts/recent?${query}`);
+      return data;
+    },
+
+    // Get expiring credentials
+    expiringCredentials: async (days = 30) => {
+      const data = await requestJson(`/contacts/expiring-credentials?days=${days}`);
+      return data;
+    },
+
+    // Create a new contact
+    create: async (payload) => {
+      const data = await requestJson('/contacts', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Get a single contact with details
+    get: async (contactId, { includeCredentials, includeActivity, includeRatings, includeDeals } = {}) => {
+      const params = new URLSearchParams();
+      if (includeCredentials) params.set('includeCredentials', 'true');
+      if (includeActivity) params.set('includeActivity', 'true');
+      if (includeRatings) params.set('includeRatings', 'true');
+      if (includeDeals) params.set('includeDeals', 'true');
+      const query = params.toString();
+      const data = await requestJson(`/contacts/${contactId}${query ? `?${query}` : ''}`);
+      return data;
+    },
+
+    // Update a contact
+    update: async (contactId, payload) => {
+      const data = await requestJson(`/contacts/${contactId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Archive a contact (soft delete)
+    archive: async (contactId) => {
+      const data = await requestJson(`/contacts/${contactId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // Toggle favorite status
+    toggleFavorite: async (contactId) => {
+      const data = await requestJson(`/contacts/${contactId}/favorite`, {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      return data;
+    },
+
+    // Credentials
+    addCredential: async (contactId, payload) => {
+      const data = await requestJson(`/contacts/${contactId}/credentials`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    updateCredential: async (contactId, credentialId, payload) => {
+      const data = await requestJson(`/contacts/${contactId}/credentials/${credentialId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    deleteCredential: async (contactId, credentialId) => {
+      const data = await requestJson(`/contacts/${contactId}/credentials/${credentialId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // Activity log
+    getActivity: async (contactId, { limit, dealId } = {}) => {
+      const params = new URLSearchParams();
+      if (limit) params.set('limit', String(limit));
+      if (dealId) params.set('dealId', dealId);
+      const query = params.toString();
+      const data = await requestJson(`/contacts/${contactId}/activity${query ? `?${query}` : ''}`);
+      return data;
+    },
+
+    logActivity: async (contactId, payload) => {
+      const data = await requestJson(`/contacts/${contactId}/activity`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Ratings
+    getRatings: async (contactId) => {
+      const data = await requestJson(`/contacts/${contactId}/ratings`);
+      return data;
+    },
+
+    addRating: async (contactId, payload) => {
+      const data = await requestJson(`/contacts/${contactId}/ratings`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Check for duplicates by email
+    checkDuplicate: async (email) => {
+      const data = await requestJson(`/contacts/check-duplicate?email=${encodeURIComponent(email)}`);
+      return data;
+    }
+  },
+
+  // Deal Contacts (assignments)
+  dealContacts: {
+    // List contacts assigned to a deal
+    list: async (dealId, dealType = 'DRAFT') => {
+      const data = await requestJson(`/contacts/deals/${dealId}?dealType=${dealType}`);
+      return data;
+    },
+
+    // Assign a contact to a deal
+    assign: async (dealId, dealType, payload) => {
+      const data = await requestJson(`/contacts/deals/${dealId}/assign`, {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, dealType })
+      });
+      return data;
+    },
+
+    // Update a deal contact assignment
+    update: async (assignmentId, payload) => {
+      const data = await requestJson(`/contacts/deals/assignments/${assignmentId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Remove contact from deal
+    remove: async (assignmentId) => {
+      const data = await requestJson(`/contacts/deals/assignments/${assignmentId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    }
+  },
+
+  // ========== LEGAL / GP COUNSEL ==========
+  legal: {
+    // Get dashboard summary with Kanban counts
+    getDashboard: async () => {
+      const data = await requestJson('/legal/dashboard');
+      return data;
+    },
+
+    // Get GC oversight stats
+    getStats: async () => {
+      const data = await requestJson('/legal/stats');
+      return data;
+    },
+
+    // List all matters with optional filters
+    listMatters: async (filters = {}) => {
+      const params = new URLSearchParams();
+      if (filters.stage) params.set('stage', filters.stage);
+      if (filters.matterType) params.set('matterType', filters.matterType);
+      if (filters.dealId) params.set('dealId', filters.dealId);
+      if (filters.assignedTo) params.set('assignedTo', filters.assignedTo);
+      if (filters.priority) params.set('priority', filters.priority);
+      if (filters.search) params.set('search', filters.search);
+      if (filters.limit) params.set('limit', String(filters.limit));
+      if (filters.offset) params.set('offset', String(filters.offset));
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/legal/matters${query}`);
+      return data;
+    },
+
+    // Create a new matter
+    createMatter: async (payload) => {
+      const data = await requestJson('/legal/matters', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Get matter by ID
+    getMatter: async (matterId) => {
+      const data = await requestJson(`/legal/matters/${matterId}`);
+      return data;
+    },
+
+    // Update matter
+    updateMatter: async (matterId, payload) => {
+      const data = await requestJson(`/legal/matters/${matterId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Change matter stage (Kanban move)
+    changeMatterStage: async (matterId, stage) => {
+      const data = await requestJson(`/legal/matters/${matterId}/stage`, {
+        method: 'POST',
+        body: JSON.stringify({ stage })
+      });
+      return data;
+    },
+
+    // Assign matter to user
+    assignMatter: async (matterId, assignedTo, assignedToName) => {
+      const data = await requestJson(`/legal/matters/${matterId}/assign`, {
+        method: 'POST',
+        body: JSON.stringify({ assignedTo, assignedToName })
+      });
+      return data;
+    },
+
+    // Sign off on matter
+    signOffMatter: async (matterId, signOffType = 'SIMPLE', conditions = null) => {
+      const data = await requestJson(`/legal/matters/${matterId}/sign-off`, {
+        method: 'POST',
+        body: JSON.stringify({ signOffType, conditions })
+      });
+      return data;
+    },
+
+    // Get matter activities
+    getActivities: async (matterId, limit = 50, offset = 0) => {
+      const data = await requestJson(`/legal/matters/${matterId}/activities?limit=${limit}&offset=${offset}`);
+      return data;
+    },
+
+    // Add activity (comment) to matter
+    addActivity: async (matterId, content, activityType = 'COMMENT', metadata = null) => {
+      const data = await requestJson(`/legal/matters/${matterId}/activities`, {
+        method: 'POST',
+        body: JSON.stringify({ content, activityType, metadata })
+      });
+      return data;
+    },
+
+    // Get legal context for a deal
+    getDealLegalContext: async (dealId) => {
+      const data = await requestJson(`/legal/deals/${dealId}/legal-context`);
+      return data;
+    },
+
+    // ========== PHASE 2: DOCUMENT ANALYSIS ==========
+
+    // List documents for a matter
+    listMatterDocuments: async (matterId, { status, documentType, limit, offset } = {}) => {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      if (documentType) params.set('documentType', documentType);
+      if (limit) params.set('limit', String(limit));
+      if (offset) params.set('offset', String(offset));
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/legal/matters/${matterId}/documents${query}`);
+      return data;
+    },
+
+    // Upload document to a matter
+    uploadDocument: async (matterId, payload) => {
+      const data = await requestJson(`/legal/matters/${matterId}/documents`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Get document by ID
+    getDocument: async (documentId) => {
+      const data = await requestJson(`/legal/documents/${documentId}`);
+      return data;
+    },
+
+    // Delete document
+    deleteDocument: async (documentId) => {
+      const data = await requestJson(`/legal/documents/${documentId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // Trigger AI analysis on document
+    analyzeDocument: async (documentId, options = {}) => {
+      const data = await requestJson(`/legal/documents/${documentId}/analyze`, {
+        method: 'POST',
+        body: JSON.stringify(options)
+      });
+      return data;
+    },
+
+    // Get analysis results for document
+    getDocumentAnalysis: async (documentId) => {
+      const data = await requestJson(`/legal/documents/${documentId}/analysis`);
+      return data;
+    },
+
+    // Analyze document against a playbook
+    analyzeWithPlaybook: async (documentId, playbookId) => {
+      const data = await requestJson(`/legal/documents/${documentId}/analyze/playbook`, {
+        method: 'POST',
+        body: JSON.stringify({ playbookId })
+      });
+      return data;
+    },
+
+    // ========== PHASE 2: PLAYBOOKS ==========
+
+    // List all playbooks
+    listPlaybooks: async ({ status, documentType, search } = {}) => {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      if (documentType) params.set('documentType', documentType);
+      if (search) params.set('search', search);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/legal/playbooks${query}`);
+      return data;
+    },
+
+    // Create a new playbook
+    createPlaybook: async (payload) => {
+      const data = await requestJson('/legal/playbooks', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Get playbook by ID with rules
+    getPlaybook: async (playbookId) => {
+      const data = await requestJson(`/legal/playbooks/${playbookId}`);
+      return data;
+    },
+
+    // Update playbook
+    updatePlaybook: async (playbookId, payload) => {
+      const data = await requestJson(`/legal/playbooks/${playbookId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Delete playbook
+    deletePlaybook: async (playbookId) => {
+      const data = await requestJson(`/legal/playbooks/${playbookId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // Add rule to playbook
+    addPlaybookRule: async (playbookId, rule) => {
+      const data = await requestJson(`/legal/playbooks/${playbookId}/rules`, {
+        method: 'POST',
+        body: JSON.stringify(rule)
+      });
+      return data;
+    },
+
+    // Update playbook rule
+    updatePlaybookRule: async (playbookId, ruleId, payload) => {
+      const data = await requestJson(`/legal/playbooks/${playbookId}/rules/${ruleId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Delete playbook rule
+    deletePlaybookRule: async (playbookId, ruleId) => {
+      const data = await requestJson(`/legal/playbooks/${playbookId}/rules/${ruleId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // Test playbook against a document
+    testPlaybook: async (playbookId, documentId) => {
+      const data = await requestJson(`/legal/playbooks/${playbookId}/test`, {
+        method: 'POST',
+        body: JSON.stringify({ documentId })
+      });
+      return data;
+    },
+
+    // Get suggested rules for a document type
+    getPlaybookSuggestions: async (documentType) => {
+      const data = await requestJson(`/legal/playbooks/suggestions?documentType=${encodeURIComponent(documentType)}`);
+      return data;
+    },
+
+    // ========== PHASE 2: VAULT (Bulk Document Analysis) ==========
+
+    // List all vaults
+    listVaults: async ({ matterId, vaultType, status } = {}) => {
+      const params = new URLSearchParams();
+      if (matterId) params.set('matterId', matterId);
+      if (vaultType) params.set('vaultType', vaultType);
+      if (status) params.set('status', status);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/legal/vaults${query}`);
+      return data;
+    },
+
+    // Create a new vault
+    createVault: async (payload) => {
+      const data = await requestJson('/legal/vaults', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Get vault by ID
+    getVault: async (vaultId) => {
+      const data = await requestJson(`/legal/vaults/${vaultId}`);
+      return data;
+    },
+
+    // Update vault
+    updateVault: async (vaultId, payload) => {
+      const data = await requestJson(`/legal/vaults/${vaultId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      return data;
+    },
+
+    // Delete vault
+    deleteVault: async (vaultId) => {
+      const data = await requestJson(`/legal/vaults/${vaultId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // List documents in a vault
+    listVaultDocuments: async (vaultId, { embeddingStatus, limit, offset } = {}) => {
+      const params = new URLSearchParams();
+      if (embeddingStatus) params.set('embeddingStatus', embeddingStatus);
+      if (limit) params.set('limit', String(limit));
+      if (offset) params.set('offset', String(offset));
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/legal/vaults/${vaultId}/documents${query}`);
+      return data;
+    },
+
+    // Add documents to vault
+    addVaultDocuments: async (vaultId, documentIds) => {
+      const data = await requestJson(`/legal/vaults/${vaultId}/documents`, {
+        method: 'POST',
+        body: JSON.stringify({ documentIds })
+      });
+      return data;
+    },
+
+    // Remove document from vault
+    removeVaultDocument: async (vaultId, documentId) => {
+      const data = await requestJson(`/legal/vaults/${vaultId}/documents/${documentId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // Query across vault documents (natural language)
+    queryVault: async (vaultId, query, options = {}) => {
+      const data = await requestJson(`/legal/vaults/${vaultId}/query`, {
+        method: 'POST',
+        body: JSON.stringify({ query, ...options })
+      });
+      return data;
+    },
+
+    // Get query history for vault
+    getVaultQueries: async (vaultId, { limit, offset } = {}) => {
+      const params = new URLSearchParams();
+      if (limit) params.set('limit', String(limit));
+      if (offset) params.set('offset', String(offset));
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/legal/vaults/${vaultId}/queries${query}`);
+      return data;
+    },
+
+    // Compare documents side-by-side
+    compareVaultDocuments: async (vaultId, documentIds, criteria = []) => {
+      const data = await requestJson(`/legal/vaults/${vaultId}/compare`, {
+        method: 'POST',
+        body: JSON.stringify({ documentIds, criteria })
+      });
+      return data;
+    },
+
+    // Generate aggregate report across vault
+    generateVaultReport: async (vaultId, reportType, options = {}) => {
+      const data = await requestJson(`/legal/vaults/${vaultId}/reports/generate`, {
+        method: 'POST',
+        body: JSON.stringify({ reportType, ...options })
+      });
+      return data;
+    }
+  },
+
+  // ========== SHARED SPACES (Phase 3) ==========
+  sharedSpaces: {
+    // ===== SPACES =====
+    // List all shared spaces for current organization
+    list: async (filters = {}) => {
+      const params = new URLSearchParams();
+      if (filters.matterId) params.set('matterId', filters.matterId);
+      if (filters.dealId) params.set('dealId', filters.dealId);
+      if (filters.isActive !== undefined) params.set('isActive', String(filters.isActive));
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/legal/spaces${query}`);
+      return data;
+    },
+
+    // Create new shared space
+    create: async (spaceData) => {
+      const data = await requestJson('/legal/spaces', {
+        method: 'POST',
+        body: JSON.stringify(spaceData)
+      });
+      return data;
+    },
+
+    // Get space detail with members, documents, messages
+    get: async (spaceId) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}`);
+      return data;
+    },
+
+    // Update space (name, description, isActive, expiresAt)
+    update: async (spaceId, updates) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(updates)
+      });
+      return data;
+    },
+
+    // Archive/delete space
+    delete: async (spaceId) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // ===== MEMBERS =====
+    // Add member (internal or external)
+    addMember: async (spaceId, memberData) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}/members`, {
+        method: 'POST',
+        body: JSON.stringify(memberData)
+      });
+      return data;
+    },
+
+    // Remove member from space
+    removeMember: async (spaceId, memberId) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}/members/${memberId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // Update member role
+    updateMemberRole: async (spaceId, memberId, role) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}/members/${memberId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ role })
+      });
+      return data;
+    },
+
+    // ===== DOCUMENTS =====
+    // Add document to space
+    addDocument: async (spaceId, documentData) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}/documents`, {
+        method: 'POST',
+        body: JSON.stringify(documentData)
+      });
+      return data;
+    },
+
+    // Remove document from space
+    removeDocument: async (spaceId, documentId) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}/documents/${documentId}`, {
+        method: 'DELETE'
+      });
+      return data;
+    },
+
+    // ===== MESSAGES =====
+    // Get messages (paginated)
+    getMessages: async (spaceId, cursor = null, limit = 50) => {
+      const params = new URLSearchParams();
+      if (cursor) params.set('cursor', cursor);
+      if (limit) params.set('limit', String(limit));
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/legal/spaces/${spaceId}/messages${query}`);
+      return data;
+    },
+
+    // Send message
+    sendMessage: async (spaceId, messageData) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify(messageData)
+      });
+      return data;
+    },
+
+    // ===== ACTIVITY =====
+    // Get activity log
+    getActivity: async (spaceId) => {
+      const data = await requestJson(`/legal/spaces/${spaceId}/activity`);
+      return data;
+    },
+
+    // ===== EXTERNAL ACCESS =====
+    // Validate external token
+    validateToken: async (token) => {
+      const data = await requestJson(`/legal/external/${token}`);
+      return data;
+    },
+
+    // Get documents (external)
+    getExternalDocuments: async (token) => {
+      const data = await requestJson(`/legal/external/${token}/documents`);
+      return data;
+    },
+
+    // Download document (external)
+    downloadExternalDocument: async (token, docId) => {
+      const data = await requestJson(`/legal/external/${token}/documents/${docId}`);
+      return data;
+    },
+
+    // Get messages (external)
+    getExternalMessages: async (token, cursor = null, limit = 50) => {
+      const params = new URLSearchParams();
+      if (cursor) params.set('cursor', cursor);
+      if (limit) params.set('limit', String(limit));
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await requestJson(`/legal/external/${token}/messages${query}`);
+      return data;
+    },
+
+    // Send message (external)
+    sendExternalMessage: async (token, messageData) => {
+      const data = await requestJson(`/legal/external/${token}/messages`, {
+        method: 'POST',
+        body: JSON.stringify(messageData)
+      });
+      return data;
+    },
+
+    // Upload document (external)
+    uploadExternalDocument: async (token, documentData) => {
+      const data = await requestJson(`/legal/external/${token}/documents`, {
+        method: 'POST',
+        body: JSON.stringify(documentData)
+      });
+      return data;
+    }
+  },
+
+  // Onboarding - Data import and onboarding workflows
+  onboarding: {
+    // Create a new onboarding session
+    createSession: async (sessionData) => {
+      const data = await requestJson('/onboarding/session', {
+        method: 'POST',
+        body: JSON.stringify(sessionData)
+      });
+      return data;
+    },
+
+    // Get session status and data
+    getSession: async (sessionId) => {
+      const data = await requestJson(`/onboarding/session/${sessionId}`);
+      return data;
+    },
+
+    // Answer AI question
+    answerQuestion: async (sessionId, questionId, answer) => {
+      const data = await requestJson('/onboarding/ai/answer', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId, questionId, answer })
+      });
+      return data;
+    },
+
+    // Dismiss AI question
+    dismissQuestion: async (sessionId, questionId) => {
+      const data = await requestJson('/onboarding/ai/dismiss', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId, questionId })
+      });
+      return data;
+    },
+
+    // Send chat message to AI
+    chatWithAI: async (sessionId, message, questionId = null) => {
+      const data = await requestJson('/onboarding/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId, message, questionId })
+      });
+      return data;
+    }
+  },
+
+  // GC Approval Queue (Phase 5.1)
+  gcApproval: {
+    // Get approval queue (General Counsel only)
+    getQueue: async () => {
+      const data = await requestJson('/legal/gc/approval-queue', {
+        method: 'GET'
+      });
+      return data;
+    },
+
+    // Request GC review for a matter
+    requestReview: async (matterId, notes) => {
+      const data = await requestJson(`/legal/matters/${matterId}/request-gc-review`, {
+        method: 'POST',
+        body: JSON.stringify({ notes })
+      });
+      return data;
+    },
+
+    // Approve matter
+    approve: async (matterId, notes) => {
+      const data = await requestJson(`/legal/gc/approve/${matterId}`, {
+        method: 'POST',
+        body: JSON.stringify({ notes })
+      });
+      return data;
+    },
+
+    // Reject matter (notes required)
+    reject: async (matterId, notes) => {
+      const data = await requestJson(`/legal/gc/reject/${matterId}`, {
+        method: 'POST',
+        body: JSON.stringify({ notes })
       });
       return data;
     }

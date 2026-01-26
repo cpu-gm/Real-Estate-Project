@@ -1,0 +1,607 @@
+{
+  "name": "Capital Call Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "capital-call-issued",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Capital Call Issued",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "capital-call-issued-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-event-type",
+              "leftValue": "={{ $json.body.eventType }}",
+              "rightValue": "CAPITAL_CALL_ISSUED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-event",
+      "name": "Filter: Is Capital Call Issued?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ received: true, callId: $json.body.detail.callId }) }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond: Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "var-call-id",
+              "name": "callId",
+              "value": "={{ $json.body.detail.callId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-deal-id",
+              "name": "dealId",
+              "value": "={{ $json.body.detail.dealId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-title",
+              "name": "callTitle",
+              "value": "={{ $json.body.detail.callTitle }}",
+              "type": "string"
+            },
+            {
+              "id": "var-total-amount",
+              "name": "totalAmount",
+              "value": "={{ $json.body.detail.totalAmount }}",
+              "type": "number"
+            },
+            {
+              "id": "var-due-date",
+              "name": "dueDate",
+              "value": "={{ $json.body.detail.dueDate }}",
+              "type": "string"
+            },
+            {
+              "id": "var-purpose",
+              "name": "purpose",
+              "value": "={{ $json.body.detail.purpose }}",
+              "type": "string"
+            },
+            {
+              "id": "var-allocations",
+              "name": "allocations",
+              "value": "={{ $json.body.detail.allocations }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-variables",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst callId = $('Set Variables').item.json.callId;\nconst signature = crypto.createHmac('sha256', secret).update(callId).digest('hex');\nreturn { signature };"
+      },
+      "id": "hmac-fetch-details",
+      "name": "Code: HMAC for Fetch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/capital-calls/{{ $('Set Variables').item.json.callId }}/details",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $('Code: HMAC for Fetch').item.json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-call-details",
+      "name": "HTTP: Fetch Capital Call Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "allocations",
+        "options": {}
+      },
+      "id": "split-allocations",
+      "name": "Split: Each LP Allocation",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "lp-email",
+              "name": "lpEmail",
+              "value": "={{ $json.lpEmail }}",
+              "type": "string"
+            },
+            {
+              "id": "lp-name",
+              "name": "lpEntityName",
+              "value": "={{ $json.lpEntityName }}",
+              "type": "string"
+            },
+            {
+              "id": "call-amount",
+              "name": "callAmount",
+              "value": "={{ $json.callAmount }}",
+              "type": "number"
+            },
+            {
+              "id": "deal-name",
+              "name": "dealName",
+              "value": "={{ $('HTTP: Fetch Capital Call Details').item.json.capitalCall.dealName }}",
+              "type": "string"
+            },
+            {
+              "id": "call-title",
+              "name": "callTitle",
+              "value": "={{ $('HTTP: Fetch Capital Call Details').item.json.capitalCall.title }}",
+              "type": "string"
+            },
+            {
+              "id": "due-date",
+              "name": "dueDate",
+              "value": "={{ $('HTTP: Fetch Capital Call Details').item.json.capitalCall.dueDate }}",
+              "type": "string"
+            },
+            {
+              "id": "purpose",
+              "name": "purpose",
+              "value": "={{ $('HTTP: Fetch Capital Call Details').item.json.capitalCall.purpose }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-lp-context",
+      "name": "Set LP Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {
+          "temperature": 0.7
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a professional real estate investment communications specialist. Generate professional, clear capital call notice emails for LP (Limited Partner) investors. Return JSON with: { \"subject\": \"string\", \"bodyHtml\": \"string\", \"bodyText\": \"string\" }. The bodyHtml should be simple HTML suitable for email. The bodyText should be plain text version.",
+              "role": "system"
+            },
+            {
+              "content": "Generate a capital call notice email for an LP investor.\n\nLP Name: {{ $json.lpEntityName }}\nDeal Name: {{ $json.dealName }}\nCapital Call Title: {{ $json.callTitle }}\nCall Amount Due: ${{ $json.callAmount.toLocaleString() }}\nDue Date: {{ new Date($json.dueDate).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) }}\nPurpose: {{ $json.purpose || 'Investment capital' }}\n\nThe email should:\n1. Clearly state this is a capital call notice\n2. Emphasize the amount due and due date prominently\n3. Mention wire instructions are attached or will follow\n4. Include a reminder about the importance of timely funding\n5. Be professional but clear about the action required (2-3 paragraphs)"
+            }
+          ]
+        }
+      },
+      "id": "generate-email-ai",
+      "name": "OpenAI: Generate Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [2010, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json.message.content;\ntry {\n  return JSON.parse(response);\n} catch (e) {\n  // Fallback if AI doesn't return valid JSON\n  const ctx = $('Set LP Context').item.json;\n  const dueDate = new Date(ctx.dueDate).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });\n  return {\n    subject: `Capital Call Notice: ${ctx.callTitle} - $${ctx.callAmount.toLocaleString()} Due ${dueDate}`,\n    bodyHtml: `<p>Dear ${ctx.lpEntityName},</p><p>This is a capital call notice for <strong>${ctx.dealName}</strong>.</p><p><strong>Amount Due:</strong> $${ctx.callAmount.toLocaleString()}<br><strong>Due Date:</strong> ${dueDate}</p><p>Please arrange for wire transfer by the due date. Wire instructions are attached.</p><p>Thank you for your continued partnership.</p>`,\n    bodyText: `Dear ${ctx.lpEntityName},\\n\\nThis is a capital call notice for ${ctx.dealName}.\\n\\nAmount Due: $${ctx.callAmount.toLocaleString()}\\nDue Date: ${dueDate}\\n\\nPlease arrange for wire transfer by the due date. Wire instructions are attached.\\n\\nThank you for your continued partnership.`\n  };\n}"
+      },
+      "id": "parse-email-response",
+      "name": "Code: Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst payload = {\n  to: $('Set LP Context').item.json.lpEmail,\n  subject: $json.subject,\n  html: $json.bodyHtml,\n  text: $json.bodyText,\n  metadata: {\n    event: 'CAPITAL_CALL_NOTIFICATION',\n    callId: $('Set Variables').item.json.callId,\n    lpEmail: $('Set LP Context').item.json.lpEmail\n  }\n};\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { ...payload, signature };"
+      },
+      "id": "hmac-send-email",
+      "name": "Code: Prepare Email + HMAC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/send-direct-email",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "X-N8n-Workflow-Name",
+              "value": "CAPITAL_CALL_NOTIFICATION"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.to, subject: $json.subject, html: $json.html, text: $json.text, metadata: $json.metadata }) }}",
+        "options": {}
+      },
+      "id": "send-email",
+      "name": "HTTP: Send Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2670, 300]
+    },
+    {
+      "parameters": {},
+      "id": "end-initial-emails",
+      "name": "End: Initial Emails Sent",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2890, 300]
+    },
+    {
+      "parameters": {
+        "amount": 7,
+        "unit": "days"
+      },
+      "id": "wait-7-days",
+      "name": "Wait: 7 Days Before Due",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [3110, 300],
+      "notes": "In production, calculate wait time based on dueDate - 7 days"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst callId = $('Set Variables').item.json.callId;\nconst signature = crypto.createHmac('sha256', secret).update(callId).digest('hex');\nreturn { signature, callId };"
+      },
+      "id": "hmac-check-unfunded",
+      "name": "Code: HMAC for Unfunded Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3330, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/capital-calls/{{ $json.callId }}/unfunded",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $json.signature }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "check-unfunded",
+      "name": "HTTP: Check Unfunded Allocations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3550, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-unfunded",
+              "leftValue": "={{ $json.unfundedCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-unfunded",
+      "name": "IF: Has Unfunded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3770, 300]
+    },
+    {
+      "parameters": {},
+      "id": "end-all-funded",
+      "name": "End: All Funded",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3990, 200]
+    },
+    {
+      "parameters": {},
+      "id": "send-reminders",
+      "name": "Send Reminder Emails",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3990, 400],
+      "notes": "TODO: Loop through unfundedAllocations and send reminder emails"
+    }
+  ],
+  "connections": {
+    "Webhook: Capital Call Issued": {
+      "main": [
+        [
+          {
+            "node": "Filter: Is Capital Call Issued?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Is Capital Call Issued?": {
+      "main": [
+        [
+          {
+            "node": "Respond: Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond: Acknowledge": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for Fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for Fetch": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Fetch Capital Call Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Fetch Capital Call Details": {
+      "main": [
+        [
+          {
+            "node": "Split: Each LP Allocation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split: Each LP Allocation": {
+      "main": [
+        [
+          {
+            "node": "Set LP Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set LP Context": {
+      "main": [
+        [
+          {
+            "node": "OpenAI: Generate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI: Generate Email": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Code: Prepare Email + HMAC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Prepare Email + HMAC": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Send Email": {
+      "main": [
+        [
+          {
+            "node": "End: Initial Emails Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "End: Initial Emails Sent": {
+      "main": [
+        [
+          {
+            "node": "Wait: 7 Days Before Due",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait: 7 Days Before Due": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for Unfunded Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for Unfunded Check": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Check Unfunded Allocations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Check Unfunded Allocations": {
+      "main": [
+        [
+          {
+            "node": "IF: Has Unfunded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Has Unfunded?": {
+      "main": [
+        [
+          {
+            "node": "Send Reminder Emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "End: All Funded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "Capital Calls"
+    },
+    {
+      "name": "LP Notifications"
+    }
+  ],
+  "pinData": {},
+  "versionId": "1"
+}

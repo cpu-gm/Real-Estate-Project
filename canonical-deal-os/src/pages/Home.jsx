@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { useRole } from '../Layout';
+import { useAuth } from '@/lib/AuthContext';
+import { isGPCounselRole } from '@/lib/permissions';
 import { bff } from '@/api/bffClient';
 import { cn } from '@/lib/utils';
 import {
@@ -40,6 +42,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import ActivityFeed from '@/components/ActivityFeed';
+import InvitationAlertCard from '@/components/broker/InvitationAlertCard';
+import CommandCenter from '@/components/dashboard/CommandCenter';
+import DeadlineWidget from '@/components/dashboard/DeadlineWidget';
+import OverdueBanner, { useOverdueItems } from '@/components/dashboard/OverdueBanner';
 
 // Icon mapping for quick starts
 const iconMap = {
@@ -58,30 +64,30 @@ const iconMap = {
 // Status colors for decision cards
 const statusColors = {
   urgent: {
-    bg: 'bg-red-50',
-    border: 'border-red-200',
-    icon: 'text-red-600',
-    badge: 'bg-red-100 text-red-700'
+    bg: 'bg-trust-risk/10',
+    border: 'border-trust-risk/20',
+    icon: 'text-trust-risk',
+    badge: 'bg-trust-risk/15 text-trust-risk'
   },
   warning: {
-    bg: 'bg-amber-50',
-    border: 'border-amber-200',
-    icon: 'text-amber-600',
-    badge: 'bg-amber-100 text-amber-700'
+    bg: 'bg-trust-pending/10',
+    border: 'border-trust-pending/20',
+    icon: 'text-trust-pending',
+    badge: 'bg-trust-pending/15 text-trust-pending'
   },
   ready: {
-    bg: 'bg-green-50',
-    border: 'border-green-200',
-    icon: 'text-green-600',
-    badge: 'bg-green-100 text-green-700'
+    bg: 'bg-trust-verified/10',
+    border: 'border-trust-verified/20',
+    icon: 'text-trust-verified',
+    badge: 'bg-trust-verified/15 text-trust-verified'
   }
 };
 
 // Impact icons for news
 const impactIcons = {
-  positive: { icon: TrendingUp, color: 'text-green-600' },
-  negative: { icon: TrendingDown, color: 'text-red-600' },
-  neutral: { icon: Minus, color: 'text-slate-500' }
+  positive: { icon: TrendingUp, color: 'text-trust-verified' },
+  negative: { icon: TrendingDown, color: 'text-trust-risk' },
+  neutral: { icon: Minus, color: 'text-muted-foreground' }
 };
 
 function DecisionCard({ card }) {
@@ -93,37 +99,37 @@ function DecisionCard({ card }) {
     <Link
       to={createPageUrl(`DealOverview?id=${card.dealId}`)}
       className={cn(
-        "block p-4 rounded-xl border transition-all duration-200 hover:shadow-md",
+        "block p-ds-16 rounded-lg border transition-colors duration-150 hover:shadow-sm",
         colors.bg,
         colors.border
       )}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-ds-12">
         <StatusIcon className={cn("w-5 h-5 mt-0.5 flex-shrink-0", colors.icon)} />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <h3 className="font-semibold text-[#171717] truncate">{card.dealName}</h3>
-            <Badge className={cn("text-xs", colors.badge)}>
+          <div className="flex items-center gap-ds-8 mb-ds-4">
+            <h3 className="text-ds-section font-medium text-foreground truncate">{card.dealName}</h3>
+            <Badge className={cn("text-ds-micro", colors.badge)}>
               {card.status === 'urgent' ? 'Blocked' :
                card.status === 'warning' ? 'Attention' : 'Ready'}
             </Badge>
           </div>
-          <p className="text-sm text-[#737373] mb-2 line-clamp-2">{card.summary}</p>
+          <p className="text-ds-body text-muted-foreground mb-ds-8 line-clamp-2">{card.summary}</p>
           {card.consequence && (
-            <p className="text-xs text-[#A3A3A3] mb-3">{card.consequence}</p>
+            <p className="text-ds-micro text-muted-foreground mb-3">{card.consequence}</p>
           )}
-          <div className="flex items-center gap-2 flex-wrap">
-            <Button size="sm" className="h-7 text-xs">
+          <div className="flex items-center gap-ds-8 flex-wrap">
+            <Button size="sm" className="h-7">
               {card.primaryAction?.label || 'Review'}
             </Button>
             {card.secondaryActions?.map((action, i) => (
-              <Button key={i} size="sm" variant="outline" className="h-7 text-xs">
+              <Button key={i} size="sm" variant="outline" className="h-7">
                 {action.label}
               </Button>
             ))}
           </div>
         </div>
-        <ChevronRight className="w-5 h-5 text-[#A3A3A3] flex-shrink-0" />
+        <ChevronRight className="w-5 h-5 text-muted-foreground flex-shrink-0" />
       </div>
     </Link>
   );
@@ -131,19 +137,19 @@ function DecisionCard({ card }) {
 
 function ChangeFeedItem({ change }) {
   const severityIcon = {
-    critical: { icon: AlertTriangle, color: 'text-red-600' },
-    warning: { icon: AlertCircle, color: 'text-amber-500' },
-    info: { icon: CheckCircle2, color: 'text-green-600' }
+    critical: { icon: AlertTriangle, color: 'text-trust-risk' },
+    warning: { icon: AlertCircle, color: 'text-trust-pending' },
+    info: { icon: CheckCircle2, color: 'text-trust-verified' }
   };
 
   const { icon: Icon, color } = severityIcon[change.severity] || severityIcon.info;
   const timeAgo = formatTimeAgo(change.timestamp);
 
   return (
-    <div className="flex items-start gap-3 py-2">
+    <div className="flex items-start gap-ds-12 py-ds-8">
       <Icon className={cn("w-4 h-4 mt-0.5 flex-shrink-0", color)} />
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-[#171717]">
+        <p className="text-ds-body text-foreground">
           <Link
             to={createPageUrl(`DealOverview?id=${change.dealId}`)}
             className="font-medium hover:underline"
@@ -152,7 +158,7 @@ function ChangeFeedItem({ change }) {
           </Link>
           {' — '}{change.summary}
         </p>
-        <p className="text-xs text-[#A3A3A3]">{timeAgo}</p>
+        <p className="text-ds-micro text-muted-foreground">{timeAgo}</p>
       </div>
     </div>
   );
@@ -164,18 +170,18 @@ function QuickStartButton({ item, href }) {
   return (
     <Link
       to={href || '#'}
-      className="flex items-center gap-3 p-3 rounded-lg border border-[#E5E5E5] bg-white hover:border-[#171717] hover:shadow-sm transition-all duration-200"
+      className="flex items-center gap-ds-12 p-ds-12 rounded-md border border-border bg-card hover:border-ink-900 hover:shadow-sm transition-colors duration-150"
     >
-      <div className="w-8 h-8 rounded-lg bg-[#F5F5F5] flex items-center justify-center">
-        <Icon className="w-4 h-4 text-[#737373]" />
+      <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center">
+        <Icon className="w-4 h-4 text-muted-foreground" />
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-[#171717]">{item.label}</p>
+        <p className="text-ds-body font-medium text-foreground">{item.label}</p>
         {item.description && (
-          <p className="text-xs text-[#A3A3A3] truncate">{item.description}</p>
+          <p className="text-ds-micro text-muted-foreground truncate">{item.description}</p>
         )}
       </div>
-      <ChevronRight className="w-4 h-4 text-[#A3A3A3]" />
+      <ChevronRight className="w-4 h-4 text-muted-foreground" />
     </Link>
   );
 }
@@ -184,9 +190,9 @@ function TruthBar({ truthBar, prominent = false }) {
   if (!truthBar) return null;
 
   const items = [
-    { label: 'stale data', count: truthBar.staleDataCount, color: 'text-amber-600', icon: Clock },
-    { label: 'overrides', count: truthBar.unresolvedOverrides, color: 'text-orange-600', icon: AlertCircle },
-    { label: 'disputed', count: truthBar.disputedDocuments, color: 'text-red-600', icon: AlertTriangle }
+    { label: 'stale data', count: truthBar.staleDataCount, color: 'text-trust-pending', icon: Clock },
+    { label: 'overrides', count: truthBar.unresolvedOverrides, color: 'text-trust-pending', icon: AlertCircle },
+    { label: 'disputed', count: truthBar.disputedDocuments, color: 'text-trust-risk', icon: AlertTriangle }
   ];
 
   const totalIssues = items.reduce((sum, item) => sum + (item.count || 0), 0);
@@ -196,28 +202,28 @@ function TruthBar({ truthBar, prominent = false }) {
   if (prominent) {
     if (!hasIssues) {
       return (
-        <div className="flex items-center gap-3 px-4 py-3 bg-green-50 border border-green-200 rounded-xl mb-6">
-          <CheckCircle2 className="w-5 h-5 text-green-600" />
+        <div className="flex items-center gap-ds-12 px-ds-16 py-ds-12 bg-trust-verified/10 border border-trust-verified/20 rounded-lg mb-ds-24">
+          <CheckCircle2 className="w-5 h-5 text-trust-verified" />
           <div className="flex-1">
-            <span className="text-sm font-medium text-green-800">Data Quality: All Clear</span>
-            <span className="text-xs text-green-600 ml-2">No stale data, overrides, or disputes</span>
+            <span className="text-ds-body font-medium text-trust-verified">Data Quality: All Clear</span>
+            <span className="text-ds-micro text-trust-verified ml-2">No stale data, overrides, or disputes</span>
           </div>
         </div>
       );
     }
 
     return (
-      <div className="flex items-center gap-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl mb-6">
-        <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0" />
+      <div className="flex items-center gap-ds-16 px-ds-16 py-ds-12 bg-trust-pending/10 border border-trust-pending/20 rounded-lg mb-ds-24">
+        <AlertTriangle className="w-5 h-5 text-trust-pending flex-shrink-0" />
         <div className="flex-1">
-          <span className="text-sm font-medium text-amber-800">Data Quality Issues ({totalIssues})</span>
-          <div className="flex items-center gap-4 mt-1">
+          <span className="text-ds-body font-medium text-trust-pending">Data Quality Issues ({totalIssues})</span>
+          <div className="flex items-center gap-ds-16 mt-ds-4">
             {items.map((item, i) => {
               const Icon = item.icon;
               return (
                 <span key={i} className={cn(
-                  "flex items-center gap-1 text-xs font-medium",
-                  item.count > 0 ? item.color : "text-[#A3A3A3]"
+                  "flex items-center gap-ds-4 text-ds-micro font-medium",
+                  item.count > 0 ? item.color : "text-muted-foreground"
                 )}>
                   <Icon className="w-3 h-3" />
                   {item.count} {item.label}
@@ -228,7 +234,7 @@ function TruthBar({ truthBar, prominent = false }) {
         </div>
         <Link
           to={createPageUrl('Deals')}
-          className="px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 rounded-lg transition-colors"
+          className="px-ds-12 py-ds-8 text-ds-micro font-medium text-trust-pending bg-trust-pending/15 hover:bg-trust-pending/20 rounded-md transition-colors"
         >
           Review Issues
         </Link>
@@ -238,10 +244,10 @@ function TruthBar({ truthBar, prominent = false }) {
 
   // Compact footer version (legacy)
   return (
-    <div className="flex items-center gap-4 px-4 py-2 bg-slate-50 border-t border-[#E5E5E5] text-xs">
-      <span className="text-[#737373] font-medium">TRUTH BAR:</span>
+    <div className="flex items-center gap-ds-16 px-ds-16 py-ds-8 bg-slate-100 border-t border-border text-ds-micro">
+      <span className="text-muted-foreground font-medium">TRUTH BAR:</span>
       {items.map((item, i) => (
-        <span key={i} className={cn("font-medium", item.count > 0 ? item.color : "text-[#A3A3A3]")}>
+        <span key={i} className={cn("font-medium", item.count > 0 ? item.color : "text-muted-foreground")}>
           {item.count} {item.label}
         </span>
       ))}
@@ -268,35 +274,35 @@ function NewsInsightCard({ insight, onAsk, onDismiss, isAsking }) {
   };
 
   return (
-    <div className="p-4 rounded-xl border border-[#E5E5E5] bg-white hover:border-[#D4D4D4] transition-colors">
-      <div className="flex items-start gap-3">
-        <Newspaper className="w-5 h-5 text-violet-500 mt-0.5 flex-shrink-0" />
+    <div className="p-ds-16 rounded-lg border border-border bg-card hover:border-slate-200 transition-colors">
+      <div className="flex items-start gap-ds-12">
+        <Newspaper className="w-5 h-5 text-trust-ai mt-0.5 flex-shrink-0" />
         <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2 mb-2">
-            <h3 className="font-semibold text-[#171717] text-sm">{insight.headline}</h3>
+          <div className="flex items-start justify-between gap-ds-8 mb-ds-8">
+            <h3 className="text-ds-section font-medium text-foreground">{insight.headline}</h3>
             <button
               onClick={() => onDismiss(insight.id)}
               className="p-1 hover:bg-slate-100 rounded"
             >
-              <X className="w-4 h-4 text-[#A3A3A3]" />
+              <X className="w-4 h-4 text-muted-foreground" />
             </button>
           </div>
 
-          <p className="text-sm text-[#737373] mb-2">{insight.summary}</p>
+          <p className="text-ds-body text-muted-foreground mb-ds-8">{insight.summary}</p>
 
           {insight.roleSpecificInsight && (
-            <div className="bg-violet-50 rounded-lg p-3 mb-3">
-              <p className="text-sm text-violet-900">{insight.roleSpecificInsight}</p>
+            <div className="bg-trust-ai/10 rounded-md p-ds-12 mb-ds-12">
+              <p className="text-ds-body text-trust-ai">{insight.roleSpecificInsight}</p>
             </div>
           )}
 
           {answer && (
-            <div className="bg-blue-50 rounded-lg p-3 mb-3 border border-blue-100">
-              <p className="text-sm text-blue-900 mb-2">{answer.answer}</p>
+            <div className="bg-trust-kernel/10 rounded-md p-ds-12 mb-ds-12 border border-trust-kernel/20">
+              <p className="text-ds-body text-trust-kernel mb-ds-8">{answer.answer}</p>
               {answer.sources?.length > 0 && (
-                <div className="flex flex-wrap gap-1">
+                <div className="flex flex-wrap gap-ds-4">
                   {answer.sources.map((s, i) => (
-                    <span key={i} className="text-xs text-blue-600 bg-blue-100 px-2 py-0.5 rounded">
+                    <span key={i} className="text-ds-micro text-trust-kernel bg-trust-kernel/15 px-ds-8 py-ds-4 rounded-sm">
                       {s.reference}
                     </span>
                   ))}
@@ -305,8 +311,8 @@ function NewsInsightCard({ insight, onAsk, onDismiss, isAsking }) {
             </div>
           )}
 
-          <div className="flex items-center gap-3 text-xs text-[#A3A3A3]">
-            <div className="flex items-center gap-1">
+          <div className="flex items-center gap-ds-12 text-ds-micro text-muted-foreground">
+            <div className="flex items-center gap-ds-4">
               <ImpactIcon className={cn("w-3 h-3", impactColor)} />
               <span className="capitalize">{insight.impact}</span>
             </div>
@@ -315,7 +321,7 @@ function NewsInsightCard({ insight, onAsk, onDismiss, isAsking }) {
               href={insight.sourceUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1 hover:text-[#171717]"
+              className="flex items-center gap-ds-4 hover:text-foreground"
             >
               {insight.source}
               <ExternalLink className="w-3 h-3" />
@@ -324,14 +330,14 @@ function NewsInsightCard({ insight, onAsk, onDismiss, isAsking }) {
             <span>{timeAgo}</span>
           </div>
 
-          <div className="flex items-center gap-2 mt-3">
+          <div className="flex items-center gap-ds-8 mt-ds-12">
             {showAskInput ? (
-              <div className="flex-1 flex gap-2">
+              <div className="flex-1 flex gap-ds-8">
                 <Input
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="Ask a follow-up question..."
-                  className="h-8 text-sm"
+                  className="h-8"
                   onKeyDown={(e) => e.key === 'Enter' && handleAsk()}
                 />
                 <Button
@@ -356,7 +362,7 @@ function NewsInsightCard({ insight, onAsk, onDismiss, isAsking }) {
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-7 text-xs"
+                  className="h-7"
                   onClick={() => setShowAskInput(true)}
                 >
                   <MessageSquare className="w-3 h-3 mr-1" />
@@ -410,21 +416,21 @@ function LenderHome({ homeData, newsData, handleAsk, handleDismiss, askMutation,
   };
 
   return (
-    <div className="min-h-screen bg-[#FAFAFA]">
+    <div className="min-h-screen bg-background">
       {/* Header - Exposure Summary */}
-      <div className="bg-white border-b border-[#E5E5E5]">
-        <div className="max-w-6xl mx-auto px-8 py-6">
+      <div className="bg-card border-b border-border">
+        <div className="max-w-content mx-auto px-ds-24 py-ds-24">
           <div className="flex items-center justify-between">
             <div>
-              <div className="flex items-center gap-2 mb-1">
-                <Building2 className="w-5 h-5 text-[#737373]" />
-                <span className="text-sm text-[#737373]">Bank X — Credit Team</span>
+              <div className="flex items-center gap-ds-8 mb-ds-4">
+                <Building2 className="w-5 h-5 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">Bank X — Credit Team</span>
               </div>
-              <h1 className="text-2xl font-semibold text-[#171717]">
+              <h1 className="text-ds-screen font-semibold text-foreground">
                 Active Exposure: {exposure.dealCount} Deals · {formatCurrency(exposure.totalOutstanding)}
               </h1>
             </div>
-            <Badge variant="outline" className="text-xs">
+            <Badge variant="outline" className="text-ds-micro">
               {currentRole}
             </Badge>
           </div>
@@ -432,73 +438,73 @@ function LenderHome({ homeData, newsData, handleAsk, handleDismiss, askMutation,
       </div>
 
       {/* Main Content */}
-      <div className="max-w-6xl mx-auto px-8 py-6 space-y-8">
+      <div className="max-w-content mx-auto px-ds-24 py-ds-24 space-y-ds-32">
 
         {/* Risk Snapshot - Three Buckets */}
         <section>
-          <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
             Risk Snapshot
           </h2>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 gap-ds-16">
             <div className={cn(
-              "bg-white rounded-xl border p-6 text-center",
-              riskBuckets.needsAttention > 0 ? "border-red-200 bg-red-50" : "border-[#E5E5E5]"
+              "bg-card rounded-lg border p-6 text-center",
+              riskBuckets.needsAttention > 0 ? "border-trust-risk/20 bg-trust-risk/10" : "border-border"
             )}>
-              <p className="text-3xl font-bold text-[#171717]">{riskBuckets.needsAttention}</p>
+              <p className="text-ds-hero font-bold text-foreground">{riskBuckets.needsAttention}</p>
               <p className={cn(
-                "text-sm font-medium mt-1",
-                riskBuckets.needsAttention > 0 ? "text-red-700" : "text-[#737373]"
+                "text-sm font-medium mt-ds-4",
+                riskBuckets.needsAttention > 0 ? "text-trust-risk" : "text-muted-foreground"
               )}>Needs Attention</p>
             </div>
             <div className={cn(
-              "bg-white rounded-xl border p-6 text-center",
-              riskBuckets.monitoring > 0 ? "border-amber-200 bg-amber-50" : "border-[#E5E5E5]"
+              "bg-card rounded-lg border p-6 text-center",
+              riskBuckets.monitoring > 0 ? "border-trust-pending/20 bg-trust-pending/10" : "border-border"
             )}>
-              <p className="text-3xl font-bold text-[#171717]">{riskBuckets.monitoring}</p>
+              <p className="text-ds-hero font-bold text-foreground">{riskBuckets.monitoring}</p>
               <p className={cn(
-                "text-sm font-medium mt-1",
-                riskBuckets.monitoring > 0 ? "text-amber-700" : "text-[#737373]"
+                "text-sm font-medium mt-ds-4",
+                riskBuckets.monitoring > 0 ? "text-trust-pending" : "text-muted-foreground"
               )}>Monitoring</p>
             </div>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-6 text-center">
-              <p className="text-3xl font-bold text-[#171717]">{riskBuckets.stable}</p>
-              <p className="text-sm font-medium text-green-700 mt-1">Stable</p>
+            <div className="bg-card rounded-lg border border-border p-6 text-center">
+              <p className="text-ds-hero font-bold text-foreground">{riskBuckets.stable}</p>
+              <p className="text-sm font-medium text-trust-verified mt-ds-4">Stable</p>
             </div>
           </div>
         </section>
 
         {/* Deal List Table */}
         <section>
-          <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
             Deal Portfolio
           </h2>
-          <div className="bg-white rounded-xl border border-[#E5E5E5] overflow-hidden">
+          <div className="bg-card rounded-lg border border-border overflow-hidden">
             <table className="w-full">
-              <thead className="bg-[#F5F5F5]">
+              <thead className="bg-slate-100">
                 <tr>
-                  <th className="text-left text-xs font-semibold text-[#737373] uppercase tracking-wider px-4 py-3">Deal</th>
-                  <th className="text-left text-xs font-semibold text-[#737373] uppercase tracking-wider px-4 py-3">Sponsor</th>
-                  <th className="text-right text-xs font-semibold text-[#737373] uppercase tracking-wider px-4 py-3">Exposure</th>
-                  <th className="text-center text-xs font-semibold text-[#737373] uppercase tracking-wider px-4 py-3">DSCR</th>
-                  <th className="text-left text-xs font-semibold text-[#737373] uppercase tracking-wider px-4 py-3">Last Update</th>
-                  <th className="text-left text-xs font-semibold text-[#737373] uppercase tracking-wider px-4 py-3">Action</th>
+                  <th className="text-left text-ds-micro font-semibold text-muted-foreground uppercase tracking-wider px-ds-16 py-ds-12">Deal</th>
+                  <th className="text-left text-ds-micro font-semibold text-muted-foreground uppercase tracking-wider px-ds-16 py-ds-12">Sponsor</th>
+                  <th className="text-right text-ds-micro font-semibold text-muted-foreground uppercase tracking-wider px-ds-16 py-ds-12">Exposure</th>
+                  <th className="text-center text-ds-micro font-semibold text-muted-foreground uppercase tracking-wider px-ds-16 py-ds-12">DSCR</th>
+                  <th className="text-left text-ds-micro font-semibold text-muted-foreground uppercase tracking-wider px-ds-16 py-ds-12">Last Update</th>
+                  <th className="text-left text-ds-micro font-semibold text-muted-foreground uppercase tracking-wider px-ds-16 py-ds-12">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#F5F5F5]">
+              <tbody className="divide-y divide-border">
                 {dealList.length > 0 ? dealList.map((deal) => (
-                  <tr key={deal.dealId} className="hover:bg-[#FAFAFA]">
-                    <td className="px-4 py-3">
-                      <Link to={createPageUrl(`DealOverview?id=${deal.dealId}`)} className="font-medium text-[#171717] hover:underline">
+                  <tr key={deal.dealId} className="hover:bg-background">
+                    <td className="px-ds-16 py-ds-12">
+                      <Link to={createPageUrl(`DealOverview?id=${deal.dealId}`)} className="font-medium text-foreground hover:underline">
                         {deal.dealName}
                       </Link>
                     </td>
-                    <td className="px-4 py-3 text-sm text-[#737373]">{deal.sponsor}</td>
-                    <td className="px-4 py-3 text-sm text-[#171717] text-right font-medium">{formatCurrency(deal.exposure)}</td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-ds-16 py-ds-12 text-sm text-muted-foreground">{deal.sponsor}</td>
+                    <td className="px-ds-16 py-ds-12 text-sm text-foreground text-right font-medium">{formatCurrency(deal.exposure)}</td>
+                    <td className="px-ds-16 py-ds-12 text-center">
                       <span className={cn(
-                        "inline-flex items-center gap-1 text-sm font-medium",
-                        deal.dscrStatus === 'warning' ? "text-amber-600" :
-                        deal.dscrStatus === 'danger' ? "text-red-600" : "text-green-600"
+                        "inline-flex items-center gap-ds-4 text-sm font-medium",
+                        deal.dscrStatus === 'warning' ? "text-trust-pending" :
+                        deal.dscrStatus === 'danger' ? "text-trust-risk" : "text-trust-verified"
                       )}>
                         {deal.dscrStatus === 'warning' && <AlertCircle className="w-3 h-3" />}
                         {deal.dscrStatus === 'danger' && <AlertTriangle className="w-3 h-3" />}
@@ -506,20 +512,20 @@ function LenderHome({ homeData, newsData, handleAsk, handleDismiss, askMutation,
                         {deal.dscr?.toFixed(2)}x
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-[#A3A3A3]">{deal.lastUpdate}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-ds-16 py-ds-12 text-sm text-muted-foreground">{deal.lastUpdate}</td>
+                    <td className="px-ds-16 py-ds-12">
                       {deal.actionRequired ? (
-                        <Button size="sm" variant="outline" className="h-7 text-xs">
+                        <Button size="sm" variant="outline" className="h-7 text-ds-micro">
                           {deal.actionRequired.label}
                         </Button>
                       ) : (
-                        <span className="text-sm text-[#A3A3A3]">—</span>
+                        <span className="text-sm text-muted-foreground">—</span>
                       )}
                     </td>
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-sm text-[#A3A3A3]">
+                    <td colSpan={6} className="px-ds-16 py-ds-32 text-center text-sm text-muted-foreground">
                       No deals in portfolio
                     </td>
                   </tr>
@@ -533,22 +539,22 @@ function LenderHome({ homeData, newsData, handleAsk, handleDismiss, askMutation,
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* What Changed */}
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Since Your Last Review
             </h2>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-4">
+            <div className="bg-card rounded-lg border border-border p-ds-16">
               {changeFeed.length > 0 ? (
-                <div className="divide-y divide-[#F5F5F5]">
+                <div className="divide-y divide-border">
                   {changeFeed.slice(0, 5).map((change) => (
                     <ChangeFeedItem key={change.id} change={change} />
                   ))}
                 </div>
               ) : (
-                <div className="flex items-center gap-3 p-4 bg-blue-50 rounded-lg">
-                  <CheckCircle2 className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                <div className="flex items-center gap-ds-12 p-ds-16 bg-trust-kernel/10 rounded-lg">
+                  <CheckCircle2 className="w-5 h-5 text-trust-kernel flex-shrink-0" />
                   <div>
-                    <p className="text-sm font-medium text-blue-800">No recent changes</p>
-                    <p className="text-xs text-blue-600">Your deals have been stable since your last review</p>
+                    <p className="text-sm font-medium text-trust-kernel">No recent changes</p>
+                    <p className="text-ds-micro text-trust-kernel">Your deals have been stable since your last review</p>
                   </div>
                 </div>
               )}
@@ -557,30 +563,30 @@ function LenderHome({ homeData, newsData, handleAsk, handleDismiss, askMutation,
 
           {/* Decisions Required */}
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Your Decisions Required
             </h2>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-4">
+            <div className="bg-card rounded-lg border border-border p-ds-16">
               {actionsRequired.length > 0 ? (
                 <div className="space-y-3">
                   {actionsRequired.map((action, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-3 bg-[#FAFAFA] rounded-lg">
+                    <div key={idx} className="flex items-center justify-between p-ds-12 bg-background rounded-lg">
                       <div>
-                        <p className="text-sm font-medium text-[#171717]">{action.dealName}</p>
-                        <p className="text-xs text-[#737373]">{action.summary}</p>
+                        <p className="text-sm font-medium text-foreground">{action.dealName}</p>
+                        <p className="text-ds-micro text-muted-foreground">{action.summary}</p>
                       </div>
-                      <Button size="sm" className="h-7 text-xs">
+                      <Button size="sm" className="h-7 text-ds-micro">
                         {action.actionLabel || 'Review'}
                       </Button>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="flex items-center gap-3 p-4 bg-green-50 rounded-lg">
-                  <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0" />
+                <div className="flex items-center gap-ds-12 p-ds-16 bg-trust-verified/10 rounded-lg">
+                  <CheckCircle2 className="w-5 h-5 text-trust-verified flex-shrink-0" />
                   <div>
-                    <p className="text-sm font-medium text-green-800">All caught up!</p>
-                    <p className="text-xs text-green-600">No pending decisions - your portfolio is in good standing</p>
+                    <p className="text-sm font-medium text-trust-verified">All caught up!</p>
+                    <p className="text-ds-micro text-trust-verified">No pending decisions - your portfolio is in good standing</p>
                   </div>
                 </div>
               )}
@@ -591,14 +597,14 @@ function LenderHome({ homeData, newsData, handleAsk, handleDismiss, askMutation,
         {/* Portfolio Risk Signals */}
         {riskSignals.length > 0 && (
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Portfolio Risk Signals
             </h2>
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <div className="bg-trust-pending/10 border border-trust-pending/20 rounded-lg p-ds-16">
               <ul className="space-y-2">
                 {riskSignals.map((signal, idx) => (
-                  <li key={idx} className="flex items-start gap-2 text-sm text-amber-900">
-                    <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-600" />
+                  <li key={idx} className="flex items-start gap-ds-8 text-sm text-trust-pending">
+                    <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-trust-pending" />
                     {signal.message}
                   </li>
                 ))}
@@ -609,10 +615,10 @@ function LenderHome({ homeData, newsData, handleAsk, handleDismiss, askMutation,
 
         {/* Recent Activity */}
         <section>
-          <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
             Recent Activity
           </h2>
-          <div className="bg-white rounded-xl border border-[#E5E5E5] p-2">
+          <div className="bg-card rounded-lg border border-border p-ds-8">
             <ActivityFeed
               limit={6}
               onActivityClick={(activity) => {
@@ -627,20 +633,20 @@ function LenderHome({ homeData, newsData, handleAsk, handleDismiss, askMutation,
         {/* AI News & Insights (Credit Risk Focus) */}
         <section>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               AI News & Insights — Credit Risk Focus
             </h2>
             {newsData?._mock && (
-              <Badge variant="outline" className="text-xs text-violet-600 border-violet-200">
+              <Badge variant="outline" className="text-ds-micro text-trust-ai border-trust-ai/20">
                 Demo Data
               </Badge>
             )}
           </div>
 
           {newsLoading ? (
-            <div className="h-40 bg-slate-100 rounded-xl animate-pulse" />
+            <div className="h-40 bg-slate-100 rounded-lg animate-pulse" />
           ) : insights.length > 0 ? (
-            <div className="grid grid-cols-1 gap-4">
+            <div className="grid grid-cols-1 gap-ds-16">
               {insights.slice(0, 2).map((insight) => (
                 <NewsInsightCard
                   key={insight.id}
@@ -652,10 +658,10 @@ function LenderHome({ homeData, newsData, handleAsk, handleDismiss, askMutation,
               ))}
             </div>
           ) : (
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-8 text-center">
-              <Newspaper className="w-12 h-12 text-[#E5E5E5] mx-auto mb-4" />
-              <p className="text-sm font-medium text-[#737373]">No news insights yet</p>
-              <p className="text-xs text-[#A3A3A3] mt-1">We'll surface relevant market news as it becomes available</p>
+            <div className="bg-card rounded-lg border border-border p-8 text-center">
+              <Newspaper className="w-12 h-12 text-slate-200 mx-auto mb-4" />
+              <p className="text-sm font-medium text-muted-foreground">No news insights yet</p>
+              <p className="text-ds-micro text-muted-foreground mt-ds-4">We'll surface relevant market news as it becomes available</p>
             </div>
           )}
         </section>
@@ -681,29 +687,29 @@ function CounselHome({ homeData, newsData, handleAsk, handleDismiss, askMutation
   const allClear = homeData?.allClear ?? (openRequests.length === 0);
 
   const requestStatusColors = {
-    draft_requested: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', label: 'Draft Requested' },
-    clarification_requested: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', label: 'Clarification Needed' },
-    review_pending: { bg: 'bg-violet-50', border: 'border-violet-200', text: 'text-violet-700', label: 'Review Pending' },
-    urgent: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', label: 'Urgent' }
+    draft_requested: { bg: 'bg-trust-kernel/10', border: 'border-trust-kernel/20', text: 'text-trust-kernel', label: 'Draft Requested' },
+    clarification_requested: { bg: 'bg-trust-pending/10', border: 'border-trust-pending/20', text: 'text-trust-pending', label: 'Clarification Needed' },
+    review_pending: { bg: 'bg-trust-ai/10', border: 'border-trust-ai/20', text: 'text-trust-ai', label: 'Review Pending' },
+    urgent: { bg: 'bg-trust-risk/10', border: 'border-trust-risk/20', text: 'text-trust-risk', label: 'Urgent' }
   };
 
   return (
-    <div className="min-h-screen bg-[#FAFAFA]">
+    <div className="min-h-screen bg-background">
       {/* Header - Firm & Role Framing */}
-      <div className="bg-white border-b border-[#E5E5E5]">
-        <div className="max-w-6xl mx-auto px-8 py-6">
+      <div className="bg-card border-b border-border">
+        <div className="max-w-content mx-auto px-ds-24 py-ds-24">
           <div className="flex items-center justify-between">
             <div>
-              <div className="flex items-center gap-2 mb-1">
-                <Scale className="w-5 h-5 text-[#737373]" />
-                <span className="text-lg font-semibold text-[#171717]">{firmName}</span>
-                <span className="text-sm text-[#737373]">— External Counsel Workspace</span>
+              <div className="flex items-center gap-ds-8 mb-ds-4">
+                <Scale className="w-5 h-5 text-muted-foreground" />
+                <span className="text-ds-panel font-semibold text-foreground">{firmName}</span>
+                <span className="text-sm text-muted-foreground">— External Counsel Workspace</span>
               </div>
-              <p className="text-sm text-[#737373] italic">
+              <p className="text-sm text-muted-foreground italic">
                 "You are participating as external legal counsel. Drafting and commentary only. No approval authority."
               </p>
             </div>
-            <Badge variant="outline" className="text-xs">
+            <Badge variant="outline" className="text-ds-micro">
               {currentRole}
             </Badge>
           </div>
@@ -711,51 +717,51 @@ function CounselHome({ homeData, newsData, handleAsk, handleDismiss, askMutation
       </div>
 
       {/* Main Content */}
-      <div className="max-w-6xl mx-auto px-8 py-6 space-y-8">
+      <div className="max-w-content mx-auto px-ds-24 py-ds-24 space-y-ds-32">
 
         {/* All Clear State */}
         {allClear && (
-          <section className="bg-green-50 border border-green-200 rounded-xl p-6 text-center">
-            <CheckCircle2 className="w-12 h-12 text-green-600 mx-auto mb-3" />
-            <h2 className="text-lg font-semibold text-green-800">No open requests.</h2>
-            <p className="text-sm text-green-700 mt-1">We'll notify you if further input is needed.</p>
+          <section className="bg-trust-verified/10 border border-trust-verified/20 rounded-lg p-6 text-center">
+            <CheckCircle2 className="w-12 h-12 text-trust-verified mx-auto mb-3" />
+            <h2 className="text-ds-panel font-semibold text-trust-verified">No open requests.</h2>
+            <p className="text-sm text-trust-verified mt-ds-4">We'll notify you if further input is needed.</p>
           </section>
         )}
 
         {/* Requests Requiring Attention */}
         {!allClear && openRequests.length > 0 && (
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Requests Requiring Attention
             </h2>
             <div className="space-y-4">
               {openRequests.map((req) => {
                 const statusStyle = requestStatusColors[req.status] || requestStatusColors.review_pending;
                 return (
-                  <div key={req.id} className={cn("rounded-xl border p-5", statusStyle.bg, statusStyle.border)}>
+                  <div key={req.id} className={cn("rounded-lg border p-ds-24", statusStyle.bg, statusStyle.border)}>
                     <div className="flex items-start justify-between mb-3">
                       <div>
-                        <h3 className="font-semibold text-[#171717]">
+                        <h3 className="font-semibold text-foreground">
                           {req.dealName} — {req.matterType}
                         </h3>
-                        <p className="text-sm text-[#737373] mt-0.5">
+                        <p className="text-sm text-muted-foreground mt-0.5">
                           Requested by: {req.requestedBy} · <span className={cn("font-medium", statusStyle.text)}>{statusStyle.label}</span>
                           {req.dueDate && <span className="ml-2">· Due: {req.dueDate}</span>}
                         </p>
                       </div>
-                      <FileText className="w-5 h-5 text-[#A3A3A3]" />
+                      <FileText className="w-5 h-5 text-muted-foreground" />
                     </div>
-                    <p className="text-sm text-[#525252] mb-4">{req.summary}</p>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Button size="sm" className="h-8 text-xs">
+                    <p className="text-sm text-ink-700 mb-4">{req.summary}</p>
+                    <div className="flex items-center gap-ds-8 flex-wrap">
+                      <Button size="sm" className="h-8 text-ds-micro">
                         <Eye className="w-3 h-3 mr-1" />
                         Review documents
                       </Button>
-                      <Button size="sm" variant="outline" className="h-8 text-xs">
+                      <Button size="sm" variant="outline" className="h-8 text-ds-micro">
                         <Upload className="w-3 h-3 mr-1" />
                         Upload draft
                       </Button>
-                      <Button size="sm" variant="ghost" className="h-8 text-xs">
+                      <Button size="sm" variant="ghost" className="h-8 text-ds-micro">
                         <Mail className="w-3 h-3 mr-1" />
                         Email instead
                       </Button>
@@ -771,20 +777,20 @@ function CounselHome({ homeData, newsData, handleAsk, handleDismiss, askMutation
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* In Progress / Waiting */}
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               In Progress / Awaiting Response
             </h2>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-4">
+            <div className="bg-card rounded-lg border border-border p-ds-16">
               {inProgress.length > 0 ? (
                 <div className="space-y-3">
                   {inProgress.map((item, idx) => (
-                    <div key={idx} className="flex items-start gap-3 py-2">
-                      <Hourglass className="w-4 h-4 text-[#A3A3A3] mt-0.5" />
+                    <div key={idx} className="flex items-start gap-ds-12 py-ds-8">
+                      <Hourglass className="w-4 h-4 text-muted-foreground mt-0.5" />
                       <div className="flex-1">
-                        <p className="text-sm text-[#171717]">
+                        <p className="text-sm text-foreground">
                           <span className="font-medium">{item.dealName}</span> — {item.summary}
                         </p>
-                        <p className="text-xs text-[#A3A3A3]">
+                        <p className="text-ds-micro text-muted-foreground">
                           Awaiting: {item.waitingOn}
                           {item.lastTouched && (
                             <span> · Last: {item.lastTouched.user}</span>
@@ -795,7 +801,7 @@ function CounselHome({ homeData, newsData, handleAsk, handleDismiss, askMutation
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-[#A3A3A3] py-4 text-center">
+                <p className="text-sm text-muted-foreground py-4 text-center">
                   Nothing in progress
                 </p>
               )}
@@ -804,10 +810,10 @@ function CounselHome({ homeData, newsData, handleAsk, handleDismiss, askMutation
 
           {/* Recent Activity */}
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Recent Activity
             </h2>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-2">
+            <div className="bg-card rounded-lg border border-border p-ds-8">
               <ActivityFeed
                 limit={6}
                 onActivityClick={(activity) => {
@@ -823,23 +829,23 @@ function CounselHome({ homeData, newsData, handleAsk, handleDismiss, askMutation
         {/* Documents Sent by Email */}
         {emailStatus.length > 0 && (
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Documents Sent by Email
             </h2>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-4">
+            <div className="bg-card rounded-lg border border-border p-ds-16">
               <div className="space-y-3">
                 {emailStatus.map((email, idx) => (
-                  <div key={idx} className="flex items-center justify-between py-2">
-                    <div className="flex items-center gap-3">
-                      <Mail className="w-4 h-4 text-[#A3A3A3]" />
+                  <div key={idx} className="flex items-center justify-between py-ds-8">
+                    <div className="flex items-center gap-ds-12">
+                      <Mail className="w-4 h-4 text-muted-foreground" />
                       <div>
-                        <p className="text-sm text-[#171717]">"{email.subject}"</p>
-                        <p className="text-xs text-[#A3A3A3]">{email.deal} · {email.receivedAt}</p>
+                        <p className="text-sm text-foreground">"{email.subject}"</p>
+                        <p className="text-ds-micro text-muted-foreground">{email.deal} · {email.receivedAt}</p>
                       </div>
                     </div>
                     <Badge variant="outline" className={cn(
-                      "text-xs",
-                      email.status === 'confirmed' ? "text-green-600 border-green-200" : "text-amber-600 border-amber-200"
+                      "text-ds-micro",
+                      email.status === 'confirmed' ? "text-trust-verified border-trust-verified/20" : "text-trust-pending border-trust-pending/20"
                     )}>
                       {email.status === 'confirmed' ? 'Confirmed' : 'Pending Confirmation'}
                     </Badge>
@@ -854,16 +860,16 @@ function CounselHome({ homeData, newsData, handleAsk, handleDismiss, askMutation
         {newsData?.insights?.length > 0 && !newsLoading && (
           <section>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider">
+              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
                 Regulatory & Legal Updates
               </h2>
               {newsData?._mock && (
-                <Badge variant="outline" className="text-xs text-violet-600 border-violet-200">
+                <Badge variant="outline" className="text-ds-micro text-trust-ai border-trust-ai/20">
                   Demo Data
                 </Badge>
               )}
             </div>
-            <div className="grid grid-cols-1 gap-4">
+            <div className="grid grid-cols-1 gap-ds-16">
               {newsData.insights.slice(0, 1).map((insight) => (
                 <NewsInsightCard
                   key={insight.id}
@@ -898,32 +904,32 @@ function GPAnalystHome({ homeData, newsData, handleAsk, handleDismiss, askMutati
   const greeting = homeData?.greeting || `Good ${getTimeOfDay()}`;
 
   const taskStatusColors = {
-    OPEN: { bg: 'bg-blue-50', text: 'text-blue-700', label: 'Open' },
-    IN_PROGRESS: { bg: 'bg-amber-50', text: 'text-amber-700', label: 'In Progress' },
-    DONE: { bg: 'bg-green-50', text: 'text-green-700', label: 'Done' },
-    BLOCKED: { bg: 'bg-red-50', text: 'text-red-700', label: 'Blocked' }
+    OPEN: { bg: 'bg-trust-kernel/10', text: 'text-trust-kernel', label: 'Open' },
+    IN_PROGRESS: { bg: 'bg-trust-pending/10', text: 'text-trust-pending', label: 'In Progress' },
+    DONE: { bg: 'bg-trust-verified/10', text: 'text-trust-verified', label: 'Done' },
+    BLOCKED: { bg: 'bg-trust-risk/10', text: 'text-trust-risk', label: 'Blocked' }
   };
 
   const priorityColors = {
-    LOW: 'text-slate-500',
-    MEDIUM: 'text-blue-600',
-    HIGH: 'text-amber-600',
-    URGENT: 'text-red-600'
+    LOW: 'text-muted-foreground',
+    MEDIUM: 'text-trust-kernel',
+    HIGH: 'text-trust-pending',
+    URGENT: 'text-trust-risk'
   };
 
   return (
-    <div className="min-h-screen bg-[#FAFAFA]">
+    <div className="min-h-screen bg-background">
       {/* Header - Analyst Dashboard */}
-      <div className="bg-white border-b border-[#E5E5E5]">
-        <div className="max-w-6xl mx-auto px-8 py-6">
+      <div className="bg-card border-b border-border">
+        <div className="max-w-content mx-auto px-ds-24 py-ds-24">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-semibold text-[#171717]">{greeting}</h1>
-              <p className="text-sm text-[#737373] mt-1">
+              <h1 className="text-ds-screen font-semibold text-foreground">{greeting}</h1>
+              <p className="text-sm text-muted-foreground mt-ds-4">
                 Analyst Dashboard — {assignedDeals.length} assigned {assignedDeals.length === 1 ? 'deal' : 'deals'}
               </p>
             </div>
-            <Badge variant="outline" className="text-xs bg-teal-50 text-teal-700 border-teal-200">
+            <Badge variant="outline" className="text-ds-micro bg-teal-50 text-teal-700 border-teal-200">
               {currentRole}
             </Badge>
           </div>
@@ -931,14 +937,14 @@ function GPAnalystHome({ homeData, newsData, handleAsk, handleDismiss, askMutati
       </div>
 
       {/* Main Content */}
-      <div className="max-w-6xl mx-auto px-8 py-6 space-y-8">
+      <div className="max-w-content mx-auto px-ds-24 py-ds-24 space-y-ds-32">
 
         {/* Empty State: No Assigned Deals */}
         {assignedDeals.length === 0 && (
-          <section className="bg-slate-50 border border-slate-200 rounded-xl p-8 text-center">
+          <section className="bg-background border border-slate-200 rounded-lg p-8 text-center">
             <Briefcase className="w-12 h-12 text-slate-400 mx-auto mb-3" />
-            <h2 className="text-lg font-semibold text-slate-700">No deals assigned yet</h2>
-            <p className="text-sm text-slate-500 mt-1">
+            <h2 className="text-ds-panel font-semibold text-ink-700">No deals assigned yet</h2>
+            <p className="text-sm text-muted-foreground mt-ds-4">
               A GP will assign you to deals when there's work to be done.
             </p>
           </section>
@@ -947,46 +953,46 @@ function GPAnalystHome({ homeData, newsData, handleAsk, handleDismiss, askMutati
         {/* My Assigned Tasks */}
         {myTasks.length > 0 && (
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               My Tasks
             </h2>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] overflow-hidden">
-              <div className="divide-y divide-[#F5F5F5]">
+            <div className="bg-card rounded-lg border border-border overflow-hidden">
+              <div className="divide-y divide-border">
                 {myTasks.slice(0, 8).map((task) => {
                   const statusStyle = taskStatusColors[task.status] || taskStatusColors.OPEN;
                   return (
-                    <div key={task.id} className="p-4 hover:bg-[#FAFAFA] transition-colors">
-                      <div className="flex items-start gap-3">
+                    <div key={task.id} className="p-ds-16 hover:bg-background transition-colors">
+                      <div className="flex items-start gap-ds-12">
                         <div className={cn(
-                          "w-2 h-2 rounded-full mt-2 flex-shrink-0",
+                          "w-2 h-2 rounded-full mt-ds-8 flex-shrink-0",
                           priorityColors[task.priority]?.replace('text-', 'bg-') || 'bg-slate-400'
                         )} />
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h3 className="font-medium text-[#171717] truncate">{task.title}</h3>
-                            <Badge className={cn("text-xs", statusStyle.bg, statusStyle.text)}>
+                          <div className="flex items-center gap-ds-8 mb-ds-4">
+                            <h3 className="font-medium text-foreground truncate">{task.title}</h3>
+                            <Badge className={cn("text-ds-micro", statusStyle.bg, statusStyle.text)}>
                               {statusStyle.label}
                             </Badge>
                           </div>
                           {task.dealName && (
                             <Link
                               to={createPageUrl(`DealOverview?id=${task.dealId}`)}
-                              className="text-sm text-blue-600 hover:underline"
+                              className="text-sm text-trust-kernel hover:underline"
                             >
                               {task.dealName}
                             </Link>
                           )}
                           {task.description && (
-                            <p className="text-sm text-[#737373] mt-1 line-clamp-2">{task.description}</p>
+                            <p className="text-sm text-muted-foreground mt-ds-4 line-clamp-2">{task.description}</p>
                           )}
                           {task.dueDate && (
-                            <p className="text-xs text-[#A3A3A3] mt-2 flex items-center gap-1">
+                            <p className="text-ds-micro text-muted-foreground mt-ds-8 flex items-center gap-ds-4">
                               <Clock className="w-3 h-3" />
                               Due: {new Date(task.dueDate).toLocaleDateString()}
                             </p>
                           )}
                         </div>
-                        <ChevronRight className="w-4 h-4 text-[#A3A3A3] flex-shrink-0" />
+                        <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                       </div>
                     </div>
                   );
@@ -999,34 +1005,34 @@ function GPAnalystHome({ homeData, newsData, handleAsk, handleDismiss, askMutati
         {/* Deals I'm Working On */}
         {assignedDeals.length > 0 && (
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Deals I'm Working On
             </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-ds-16">
               {assignedDeals.map((deal) => (
                 <Link
                   key={deal.id}
                   to={createPageUrl(`DealOverview?id=${deal.id}`)}
-                  className="block p-5 bg-white rounded-xl border border-[#E5E5E5] hover:border-[#A3A3A3] hover:shadow-sm transition-all"
+                  className="block p-ds-24 bg-card rounded-lg border border-border hover:border-ink-500 hover:shadow-sm transition-colors"
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div>
-                      <h3 className="font-semibold text-[#171717]">{deal.name}</h3>
-                      <p className="text-sm text-[#737373]">{deal.propertyType || 'Real Estate'}</p>
+                      <h3 className="font-semibold text-foreground">{deal.name}</h3>
+                      <p className="text-sm text-muted-foreground">{deal.propertyType || 'Real Estate'}</p>
                     </div>
-                    <Badge variant="outline" className="text-xs">
+                    <Badge variant="outline" className="text-ds-micro">
                       {deal.phase || 'Active'}
                     </Badge>
                   </div>
-                  <div className="flex items-center gap-4 text-xs text-[#A3A3A3]">
+                  <div className="flex items-center gap-ds-16 text-ds-micro text-muted-foreground">
                     {deal.openTasks > 0 && (
-                      <span className="flex items-center gap-1">
+                      <span className="flex items-center gap-ds-4">
                         <FileCheck className="w-3 h-3" />
                         {deal.openTasks} open tasks
                       </span>
                     )}
                     {deal.dataIssues > 0 && (
-                      <span className="flex items-center gap-1 text-amber-600">
+                      <span className="flex items-center gap-ds-4 text-trust-pending">
                         <AlertCircle className="w-3 h-3" />
                         {deal.dataIssues} data issues
                       </span>
@@ -1042,29 +1048,29 @@ function GPAnalystHome({ homeData, newsData, handleAsk, handleDismiss, askMutati
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Data Quality Issues */}
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Data Quality Issues
             </h2>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-4">
+            <div className="bg-card rounded-lg border border-border p-ds-16">
               {dataQualityIssues.length > 0 ? (
                 <div className="space-y-3">
                   {dataQualityIssues.slice(0, 5).map((issue, idx) => (
-                    <div key={idx} className="flex items-start gap-3 p-3 bg-amber-50 rounded-lg border border-amber-100">
-                      <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
+                    <div key={idx} className="flex items-start gap-ds-12 p-ds-12 bg-trust-pending/10 rounded-lg border border-trust-pending/20">
+                      <AlertTriangle className="w-4 h-4 text-trust-pending mt-0.5 flex-shrink-0" />
                       <div className="flex-1">
-                        <p className="text-sm font-medium text-[#171717]">{issue.fieldName}</p>
-                        <p className="text-xs text-[#737373]">{issue.dealName} — {issue.reason}</p>
+                        <p className="text-sm font-medium text-foreground">{issue.fieldName}</p>
+                        <p className="text-ds-micro text-muted-foreground">{issue.dealName} — {issue.reason}</p>
                       </div>
-                      <Button size="sm" variant="outline" className="h-7 text-xs">
+                      <Button size="sm" variant="outline" className="h-7 text-ds-micro">
                         Fix
                       </Button>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="flex items-center gap-3 p-4 bg-green-50 rounded-lg">
-                  <CheckCircle2 className="w-5 h-5 text-green-600" />
-                  <p className="text-sm text-green-700">All data fields are up to date</p>
+                <div className="flex items-center gap-ds-12 p-ds-16 bg-trust-verified/10 rounded-lg">
+                  <CheckCircle2 className="w-5 h-5 text-trust-verified" />
+                  <p className="text-sm text-trust-verified">All data fields are up to date</p>
                 </div>
               )}
             </div>
@@ -1072,33 +1078,33 @@ function GPAnalystHome({ homeData, newsData, handleAsk, handleDismiss, askMutati
 
           {/* Pending Reviews from GP */}
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Awaiting GP Review
             </h2>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-4">
+            <div className="bg-card rounded-lg border border-border p-ds-16">
               {pendingReviews.length > 0 ? (
                 <div className="space-y-3">
                   {pendingReviews.map((review, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-3 bg-[#FAFAFA] rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <Hourglass className="w-4 h-4 text-[#A3A3A3]" />
+                    <div key={idx} className="flex items-center justify-between p-ds-12 bg-background rounded-lg">
+                      <div className="flex items-center gap-ds-12">
+                        <Hourglass className="w-4 h-4 text-muted-foreground" />
                         <div>
-                          <p className="text-sm font-medium text-[#171717]">{review.dealName}</p>
-                          <p className="text-xs text-[#737373]">{review.requestType}</p>
+                          <p className="text-sm font-medium text-foreground">{review.dealName}</p>
+                          <p className="text-ds-micro text-muted-foreground">{review.requestType}</p>
                         </div>
                       </div>
-                      <p className="text-xs text-[#A3A3A3]">
+                      <p className="text-ds-micro text-muted-foreground">
                         Submitted {review.submittedAgo}
                       </p>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="flex items-center gap-3 p-4 bg-green-50 rounded-lg">
-                  <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0" />
+                <div className="flex items-center gap-ds-12 p-ds-16 bg-trust-verified/10 rounded-lg">
+                  <CheckCircle2 className="w-5 h-5 text-trust-verified flex-shrink-0" />
                   <div>
-                    <p className="text-sm font-medium text-green-800">Reviews cleared!</p>
-                    <p className="text-xs text-green-600">All your submitted work has been reviewed</p>
+                    <p className="text-sm font-medium text-trust-verified">Reviews cleared!</p>
+                    <p className="text-ds-micro text-trust-verified">All your submitted work has been reviewed</p>
                   </div>
                 </div>
               )}
@@ -1108,44 +1114,44 @@ function GPAnalystHome({ homeData, newsData, handleAsk, handleDismiss, askMutati
 
         {/* Quick Actions */}
         <section>
-          <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
             Quick Actions
           </h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-ds-12">
             <Link
               to={createPageUrl('CreateDeal')}
-              className="flex flex-col items-center gap-2 p-4 bg-white rounded-xl border border-[#E5E5E5] hover:border-[#A3A3A3] hover:shadow-sm transition-all"
+              className="flex flex-col items-center gap-ds-8 p-ds-16 bg-card rounded-lg border border-border hover:border-ink-500 hover:shadow-sm transition-colors"
             >
-              <Upload className="w-5 h-5 text-[#737373]" />
-              <span className="text-sm font-medium text-[#171717]">Upload Document</span>
+              <Upload className="w-5 h-5 text-muted-foreground" />
+              <span className="text-sm font-medium text-foreground">Upload Document</span>
             </Link>
             <button
-              className="flex flex-col items-center gap-2 p-4 bg-white rounded-xl border border-[#E5E5E5] hover:border-[#A3A3A3] hover:shadow-sm transition-all"
+              className="flex flex-col items-center gap-ds-8 p-ds-16 bg-card rounded-lg border border-border hover:border-ink-500 hover:shadow-sm transition-colors"
             >
-              <FileText className="w-5 h-5 text-[#737373]" />
-              <span className="text-sm font-medium text-[#171717]">Update Deal Field</span>
+              <FileText className="w-5 h-5 text-muted-foreground" />
+              <span className="text-sm font-medium text-foreground">Update Deal Field</span>
             </button>
             <button
-              className="flex flex-col items-center gap-2 p-4 bg-white rounded-xl border border-[#E5E5E5] hover:border-[#A3A3A3] hover:shadow-sm transition-all"
+              className="flex flex-col items-center gap-ds-8 p-ds-16 bg-card rounded-lg border border-border hover:border-ink-500 hover:shadow-sm transition-colors"
             >
-              <Send className="w-5 h-5 text-[#737373]" />
-              <span className="text-sm font-medium text-[#171717]">Request GP Review</span>
+              <Send className="w-5 h-5 text-muted-foreground" />
+              <span className="text-sm font-medium text-foreground">Request GP Review</span>
             </button>
             <button
-              className="flex flex-col items-center gap-2 p-4 bg-white rounded-xl border border-[#E5E5E5] hover:border-[#A3A3A3] hover:shadow-sm transition-all"
+              className="flex flex-col items-center gap-ds-8 p-ds-16 bg-card rounded-lg border border-border hover:border-ink-500 hover:shadow-sm transition-colors"
             >
-              <Plus className="w-5 h-5 text-[#737373]" />
-              <span className="text-sm font-medium text-[#171717]">Create Task</span>
+              <Plus className="w-5 h-5 text-muted-foreground" />
+              <span className="text-sm font-medium text-foreground">Create Task</span>
             </button>
           </div>
         </section>
 
         {/* Recent Activity */}
         <section>
-          <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
             Recent Activity
           </h2>
-          <div className="bg-white rounded-xl border border-[#E5E5E5] p-2">
+          <div className="bg-card rounded-lg border border-border p-ds-8">
             <ActivityFeed
               limit={6}
               onActivityClick={(activity) => {
@@ -1165,8 +1171,47 @@ function GPAnalystHome({ homeData, newsData, handleAsk, handleDismiss, askMutati
 // GP HOME COMPONENT (existing, refactored into separate function)
 // =============================================================================
 
-function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, newsLoading, pendingReviews }) {
+function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, newsLoading, pendingReviews, pendingInvitations, isBroker }) {
   const { currentRole } = useRole();
+  const [showCommandCenter, setShowCommandCenter] = useState(true);
+
+  // Convert decision cards to attention items for CommandCenter
+  const attentionItems = (homeData?.decisionCards || []).map((card) => ({
+    id: card.dealId,
+    type: 'deal',
+    title: card.dealName,
+    description: card.summary,
+    urgency: card.status === 'urgent' ? 'blocked' :
+             card.status === 'warning' ? 'warning' : 'ready',
+    href: createPageUrl(`DealOverview?id=${card.dealId}`),
+    action: card.primaryAction ? {
+      label: card.primaryAction.label || 'Review',
+      onClick: () => window.location.href = createPageUrl(`DealOverview?id=${card.dealId}`)
+    } : null,
+    timestamp: new Date().toISOString(), // Use current time as fallback
+  }));
+
+  // Add pending review requests to attention items
+  if (pendingReviews?.requests?.length > 0) {
+    pendingReviews.requests.forEach((review) => {
+      attentionItems.push({
+        id: `review-${review.id}`,
+        type: 'review',
+        title: `Review Request: ${review.dealName || 'Deal'}`,
+        description: review.message || `Requested by ${review.requestedByName || 'Analyst'}`,
+        urgency: 'attention',
+        href: createPageUrl(`DealOverview?id=${review.dealId}`),
+        timestamp: review.requestedAt || new Date().toISOString(),
+      });
+    });
+  }
+
+  // Calculate overdue items for the banner
+  const overdueItems = useOverdueItems({
+    capitalCalls: homeData?.capitalCalls || [],
+    reviews: pendingReviews?.requests || [],
+    documents: homeData?.documents || [],
+  });
 
   const quickStartHrefs = {
     'create-deal': createPageUrl('CreateDeal'),
@@ -1190,23 +1235,23 @@ function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, new
   const insights = newsData?.insights || [];
 
   return (
-    <div className="min-h-screen bg-[#FAFAFA]">
+    <div className="min-h-screen bg-background">
       {/* Header Section */}
-      <div className="bg-white border-b border-[#E5E5E5]">
-        <div className="max-w-6xl mx-auto px-8 py-6">
+      <div className="bg-card border-b border-border">
+        <div className="max-w-content mx-auto px-ds-24 py-ds-24">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-semibold text-[#171717]">{greeting}</h1>
-              <p className="text-sm text-[#737373] mt-1">
+              <h1 className="text-ds-screen font-semibold text-foreground">{greeting}</h1>
+              <p className="text-sm text-muted-foreground mt-ds-4">
                 {homeData?.dayOfWeek} • {portfolioStatus}
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="text-xs">
+            <div className="flex items-center gap-ds-8">
+              <Badge variant="outline" className="text-ds-micro">
                 {currentRole}
               </Badge>
               {homeData?.portfolioSummary && (
-                <Badge variant="secondary" className="text-xs">
+                <Badge variant="secondary" className="text-ds-micro">
                   {homeData.portfolioSummary.totalDeals} deals
                 </Badge>
               )}
@@ -1216,18 +1261,46 @@ function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, new
       </div>
 
       {/* Main Content */}
-      <div className="max-w-6xl mx-auto px-8 py-6 space-y-8">
+      <div className="max-w-content mx-auto px-ds-24 py-ds-24 space-y-ds-32">
+
+        {/* Overdue Banner - Top priority alert */}
+        <OverdueBanner overdueItems={overdueItems} />
 
         {/* Truth Bar - Prominent Position */}
         <TruthBar truthBar={truthBar} prominent />
 
-        {/* Decisions & Actions Section */}
-        {decisionCards.length > 0 && (
+        {/* Broker Invitation Alert - Show for brokers with pending invitations */}
+        {isBroker && pendingInvitations?.length > 0 && (
+          <InvitationAlertCard invitations={pendingInvitations} />
+        )}
+
+        {/* Command Center - Attention-sorted feed with urgency indicators */}
+        {showCommandCenter && (
+          <CommandCenter
+            items={attentionItems}
+            onToggleView={() => setShowCommandCenter(false)}
+          />
+        )}
+
+        {/* Legacy Decisions & Actions Section - Show when CommandCenter is hidden or no attention items */}
+        {(!showCommandCenter || attentionItems.length === 0) && decisionCards.length > 0 && (
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
-              Decisions & Actions — Today
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                Decisions & Actions — Today
+              </h2>
+              {!showCommandCenter && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowCommandCenter(true)}
+                  className="text-ds-micro"
+                >
+                  Show Command Center
+                </Button>
+              )}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-ds-16">
               {decisionCards.map((card) => (
                 <DecisionCard key={card.dealId} card={card} />
               ))}
@@ -1238,34 +1311,34 @@ function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, new
         {/* Analyst Review Requests Section */}
         {pendingReviews?.requests?.length > 0 && (
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Analyst Review Requests
             </h2>
-            <div className="bg-amber-50 rounded-xl border border-amber-200 p-4">
+            <div className="bg-trust-pending/10 rounded-lg border border-trust-pending/20 p-ds-16">
               <div className="space-y-3">
                 {pendingReviews.requests.map((review) => (
                   <Link
                     key={review.id}
                     to={createPageUrl(`DealOverview?id=${review.dealId}`)}
-                    className="flex items-start gap-3 p-3 bg-white rounded-lg border border-amber-100 hover:border-amber-300 hover:shadow-sm transition-all"
+                    className="flex items-start gap-ds-12 p-ds-12 bg-card rounded-lg border border-trust-pending/20 hover:border-trust-pending/40 hover:shadow-sm transition-colors"
                   >
-                    <Clock className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                    <Clock className="w-5 h-5 text-trust-pending mt-0.5 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h3 className="font-semibold text-[#171717]">{review.dealName || 'Deal Review'}</h3>
-                        <Badge className="bg-amber-100 text-amber-700 text-xs">
+                      <div className="flex items-center gap-ds-8 mb-ds-4">
+                        <h3 className="font-semibold text-foreground">{review.dealName || 'Deal Review'}</h3>
+                        <Badge className="bg-trust-pending/15 text-trust-pending text-ds-micro">
                           Pending Review
                         </Badge>
                       </div>
-                      <p className="text-sm text-[#737373]">
+                      <p className="text-sm text-muted-foreground">
                         Requested by <span className="font-medium">{review.requestedByName || 'Analyst'}</span>
                         {review.message && <span className="ml-1">— "{review.message}"</span>}
                       </p>
-                      <p className="text-xs text-[#A3A3A3] mt-1">
+                      <p className="text-ds-micro text-muted-foreground mt-ds-4">
                         {formatTimeAgo(review.requestedAt)}
                       </p>
                     </div>
-                    <ChevronRight className="w-5 h-5 text-[#A3A3A3] flex-shrink-0" />
+                    <ChevronRight className="w-5 h-5 text-muted-foreground flex-shrink-0" />
                   </Link>
                 ))}
               </div>
@@ -1273,14 +1346,21 @@ function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, new
           </section>
         )}
 
+        {/* Deadline Widget - Upcoming deadlines grouped by type */}
+        <DeadlineWidget
+          capitalCalls={homeData?.capitalCalls || []}
+          reviews={pendingReviews?.requests || []}
+          documents={homeData?.documents || []}
+        />
+
         {/* Two Column Section: Activity Feed + Quick Starts */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Recent Activity Section */}
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Recent Activity
             </h2>
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-2">
+            <div className="bg-card rounded-lg border border-border p-ds-8">
               <ActivityFeed
                 limit={8}
                 onActivityClick={(activity) => {
@@ -1297,7 +1377,7 @@ function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, new
 
           {/* Quick Starts Section */}
           <section>
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider mb-4">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
               Start Something New
             </h2>
             <div className="space-y-2">
@@ -1315,24 +1395,24 @@ function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, new
         {/* AI News & Insights Section */}
         <section>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-[#A3A3A3] uppercase tracking-wider">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               AI News & Insights
             </h2>
             {newsData?._mock && (
-              <Badge variant="outline" className="text-xs text-violet-600 border-violet-200">
+              <Badge variant="outline" className="text-ds-micro text-trust-ai border-trust-ai/20">
                 Demo Data
               </Badge>
             )}
           </div>
 
           {newsLoading ? (
-            <div className="grid grid-cols-1 gap-4">
+            <div className="grid grid-cols-1 gap-ds-16">
               {[1, 2].map(i => (
-                <div key={i} className="h-40 bg-slate-100 rounded-xl animate-pulse" />
+                <div key={i} className="h-40 bg-slate-100 rounded-lg animate-pulse" />
               ))}
             </div>
           ) : insights.length > 0 ? (
-            <div className="grid grid-cols-1 gap-4">
+            <div className="grid grid-cols-1 gap-ds-16">
               {insights.slice(0, 3).map((insight) => (
                 <NewsInsightCard
                   key={insight.id}
@@ -1344,10 +1424,10 @@ function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, new
               ))}
             </div>
           ) : (
-            <div className="bg-white rounded-xl border border-[#E5E5E5] p-8 text-center">
-              <Newspaper className="w-12 h-12 text-[#E5E5E5] mx-auto mb-4" />
-              <p className="text-sm font-medium text-[#737373]">No news insights yet</p>
-              <p className="text-xs text-[#A3A3A3] mt-1">We'll surface relevant market news as it becomes available</p>
+            <div className="bg-card rounded-lg border border-border p-8 text-center">
+              <Newspaper className="w-12 h-12 text-slate-200 mx-auto mb-4" />
+              <p className="text-sm font-medium text-muted-foreground">No news insights yet</p>
+              <p className="text-ds-micro text-muted-foreground mt-ds-4">We'll surface relevant market news as it becomes available</p>
             </div>
           )}
         </section>
@@ -1362,7 +1442,17 @@ function GPHome({ homeData, newsData, handleAsk, handleDismiss, askMutation, new
 
 export default function HomePage() {
   const { currentRole } = useRole();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
+
+  // Redirect GP Counsel to their specialized dashboard
+  if (user?.role && isGPCounselRole(user.role)) {
+    return <Navigate to={createPageUrl('GPCounselHome')} replace />;
+  }
+
+  // Check if user is a broker - use actual user role, not UI role-switcher
+  const isBroker = user?.role === 'Broker';
+  console.log('[HomePage] Role check', { userRole: user?.role, currentRole, isBroker });
 
   // Fetch homepage data
   const { data: homeData, isLoading: homeLoading } = useQuery({
@@ -1385,6 +1475,18 @@ export default function HomePage() {
     enabled: currentRole === 'GP',
     staleTime: 30000 // 30 seconds
   });
+
+  // Fetch broker invitations (Broker only)
+  const { data: invitationsData } = useQuery({
+    queryKey: ['brokerInvitations'],
+    queryFn: () => bff.brokerInvitations.list(),
+    enabled: isBroker,
+    staleTime: 30000 // 30 seconds
+  });
+
+  const pendingInvitations = invitationsData?.invitations?.filter(
+    inv => inv.status === 'PENDING'
+  ) || [];
 
   // Ask follow-up mutation
   const askMutation = useMutation({
@@ -1413,13 +1515,13 @@ export default function HomePage() {
   // Loading state
   if (homeLoading) {
     return (
-      <div className="p-8 max-w-6xl mx-auto">
+      <div className="p-8 max-w-content mx-auto">
         <div className="animate-pulse space-y-6">
           <div className="h-12 bg-slate-100 rounded w-1/3" />
           <div className="h-6 bg-slate-100 rounded w-1/4" />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-ds-16">
             {[1, 2, 3, 4].map(i => (
-              <div key={i} className="h-32 bg-slate-100 rounded-xl" />
+              <div key={i} className="h-32 bg-slate-100 rounded-lg" />
             ))}
           </div>
         </div>
@@ -1435,7 +1537,9 @@ export default function HomePage() {
     handleDismiss,
     askMutation,
     newsLoading,
-    pendingReviews
+    pendingReviews,
+    pendingInvitations,
+    isBroker
   };
 
   // Render appropriate home component based on role
@@ -1451,7 +1555,7 @@ export default function HomePage() {
     return <GPAnalystHome {...homeProps} />;
   }
 
-  // Default: GP and all other roles use GPHome
+  // Default: GP, Broker, and all other roles use GPHome
   return <GPHome {...homeProps} />;
 }
 

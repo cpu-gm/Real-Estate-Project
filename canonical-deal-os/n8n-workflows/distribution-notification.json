@@ -1,0 +1,450 @@
+{
+  "name": "Distribution Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "distribution-approved",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Distribution Approved",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "distribution-approved-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-event-type",
+              "leftValue": "={{ $json.body.eventType }}",
+              "rightValue": "DISTRIBUTION_APPROVED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-event",
+      "name": "Filter: Is Distribution Approved?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ received: true, distributionId: $json.body.detail.distributionId }) }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond: Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "var-distribution-id",
+              "name": "distributionId",
+              "value": "={{ $json.body.detail.distributionId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-deal-id",
+              "name": "dealId",
+              "value": "={{ $json.body.detail.dealId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-title",
+              "name": "distributionTitle",
+              "value": "={{ $json.body.detail.distributionTitle }}",
+              "type": "string"
+            },
+            {
+              "id": "var-total-amount",
+              "name": "totalAmount",
+              "value": "={{ $json.body.detail.totalAmount }}",
+              "type": "number"
+            },
+            {
+              "id": "var-period",
+              "name": "period",
+              "value": "={{ $json.body.detail.period }}",
+              "type": "string"
+            },
+            {
+              "id": "var-allocations",
+              "name": "allocations",
+              "value": "={{ $json.body.detail.allocations }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-variables",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst distributionId = $('Set Variables').item.json.distributionId;\nconst signature = crypto.createHmac('sha256', secret).update(distributionId).digest('hex');\nreturn { signature };"
+      },
+      "id": "hmac-fetch-details",
+      "name": "Code: HMAC for Fetch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/distributions/{{ $('Set Variables').item.json.distributionId }}/details",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $('Code: HMAC for Fetch').item.json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-distribution-details",
+      "name": "HTTP: Fetch Distribution Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "allocations",
+        "options": {}
+      },
+      "id": "split-allocations",
+      "name": "Split: Each LP Allocation",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "lp-email",
+              "name": "lpEmail",
+              "value": "={{ $json.lpEmail }}",
+              "type": "string"
+            },
+            {
+              "id": "lp-name",
+              "name": "lpEntityName",
+              "value": "={{ $json.lpEntityName }}",
+              "type": "string"
+            },
+            {
+              "id": "net-amount",
+              "name": "netAmount",
+              "value": "={{ $json.netAmount }}",
+              "type": "number"
+            },
+            {
+              "id": "gross-amount",
+              "name": "grossAmount",
+              "value": "={{ $json.grossAmount }}",
+              "type": "number"
+            },
+            {
+              "id": "deal-name",
+              "name": "dealName",
+              "value": "={{ $('HTTP: Fetch Distribution Details').item.json.distribution.dealName }}",
+              "type": "string"
+            },
+            {
+              "id": "dist-title",
+              "name": "distributionTitle",
+              "value": "={{ $('HTTP: Fetch Distribution Details').item.json.distribution.title }}",
+              "type": "string"
+            },
+            {
+              "id": "dist-period",
+              "name": "period",
+              "value": "={{ $('HTTP: Fetch Distribution Details').item.json.distribution.period }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-lp-context",
+      "name": "Set LP Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {
+          "temperature": 0.7
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a professional real estate investment communications specialist. Generate professional, warm but concise emails for LP (Limited Partner) investor distribution notifications. Return JSON with: { \"subject\": \"string\", \"bodyHtml\": \"string\", \"bodyText\": \"string\" }. The bodyHtml should be simple HTML suitable for email. The bodyText should be plain text version.",
+              "role": "system"
+            },
+            {
+              "content": "Generate a distribution notification email for an LP investor.\n\nLP Name: {{ $json.lpEntityName }}\nDeal Name: {{ $json.dealName }}\nDistribution Title: {{ $json.distributionTitle }}\nPeriod: {{ $json.period || 'Current Period' }}\nGross Amount: ${{ $json.grossAmount.toLocaleString() }}\nNet Amount (after withholding): ${{ $json.netAmount.toLocaleString() }}\n\nThis is a notification that a distribution has been approved and will be processed shortly. The email should:\n1. Congratulate them on the distribution\n2. Clearly state the net amount they will receive\n3. Mention funds will be sent via their preferred payment method on file\n4. Keep it professional but warm (2 paragraphs max)"
+            }
+          ]
+        }
+      },
+      "id": "generate-email-ai",
+      "name": "OpenAI: Generate Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [2010, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json.message.content;\ntry {\n  return JSON.parse(response);\n} catch (e) {\n  // Fallback if AI doesn't return valid JSON\n  return {\n    subject: `Distribution Notice: ${$('Set LP Context').item.json.distributionTitle}`,\n    bodyHtml: `<p>Dear ${$('Set LP Context').item.json.lpEntityName},</p><p>A distribution of <strong>$${$('Set LP Context').item.json.netAmount.toLocaleString()}</strong> has been approved for ${$('Set LP Context').item.json.dealName}. Funds will be sent to your account on file shortly.</p><p>Thank you for your continued investment.</p>`,\n    bodyText: `Dear ${$('Set LP Context').item.json.lpEntityName},\\n\\nA distribution of $${$('Set LP Context').item.json.netAmount.toLocaleString()} has been approved for ${$('Set LP Context').item.json.dealName}. Funds will be sent to your account on file shortly.\\n\\nThank you for your continued investment.`\n  };\n}"
+      },
+      "id": "parse-email-response",
+      "name": "Code: Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst payload = {\n  to: $('Set LP Context').item.json.lpEmail,\n  subject: $json.subject,\n  html: $json.bodyHtml,\n  text: $json.bodyText,\n  metadata: {\n    event: 'DISTRIBUTION_NOTIFICATION',\n    distributionId: $('Set Variables').item.json.distributionId,\n    lpEmail: $('Set LP Context').item.json.lpEmail\n  }\n};\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { ...payload, signature };"
+      },
+      "id": "hmac-send-email",
+      "name": "Code: Prepare Email + HMAC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/send-direct-email",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "X-N8n-Workflow-Name",
+              "value": "DISTRIBUTION_NOTIFICATION"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.to, subject: $json.subject, html: $json.html, text: $json.text, metadata: $json.metadata }) }}",
+        "options": {}
+      },
+      "id": "send-email",
+      "name": "HTTP: Send Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2670, 300]
+    },
+    {
+      "parameters": {},
+      "id": "end-success",
+      "name": "End: Emails Sent",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2890, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Distribution Approved": {
+      "main": [
+        [
+          {
+            "node": "Filter: Is Distribution Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Is Distribution Approved?": {
+      "main": [
+        [
+          {
+            "node": "Respond: Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond: Acknowledge": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for Fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for Fetch": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Fetch Distribution Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Fetch Distribution Details": {
+      "main": [
+        [
+          {
+            "node": "Split: Each LP Allocation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split: Each LP Allocation": {
+      "main": [
+        [
+          {
+            "node": "Set LP Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set LP Context": {
+      "main": [
+        [
+          {
+            "node": "OpenAI: Generate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI: Generate Email": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Code: Prepare Email + HMAC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Prepare Email + HMAC": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Send Email": {
+      "main": [
+        [
+          {
+            "node": "End: Emails Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "Distributions"
+    },
+    {
+      "name": "LP Notifications"
+    }
+  ],
+  "pinData": {},
+  "versionId": "1"
+}

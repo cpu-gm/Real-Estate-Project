@@ -3,6 +3,8 @@ import { kernelFetchJson, kernelRequest, createOrUpdateMaterial } from "../kerne
 import { deleteCacheByPrefix } from "../runtime.js";
 import { invalidateDealCaches } from "./deals.js";
 import { requestSmartDocParse } from "../llm.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+import { SmartParseSchema, SmartParseApplySchema } from "../middleware/route-schemas.js";
 
 const KERNEL_BASE_URL = process.env.KERNEL_API_URL ?? "http://localhost:3001";
 
@@ -27,15 +29,27 @@ function sendError(res, status, message, details) {
 export async function handleSmartParse(req, res, dealId, readJsonBody) {
   const body = await readJsonBody(req);
 
-  if (!body) {
-    return sendError(res, 400, "Request body required");
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleSmartParse');
+  validationLog.beforeValidation(body);
+
+  const parsed = SmartParseSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
 
-  const { artifactId, filename, targetFields = [] } = body;
+  validationLog.afterValidation(parsed.data);
+  // ================================
 
-  if (!artifactId) {
-    return sendError(res, 400, "artifactId is required");
-  }
+  const { artifactId, filename, targetFields = [] } = parsed.data;
 
   try {
     // Step 1: Get the artifact content from kernel
@@ -144,26 +158,36 @@ export async function handleSmartParse(req, res, dealId, readJsonBody) {
  *
  * Takes the extracted values and applies them to the deal profile,
  * updating provenance and creating materials as needed.
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleSmartParseApply(req, res, dealId, readJsonBody, resolveUserId) {
+export async function handleSmartParseApply(req, res, dealId, readJsonBody, authUser) {
   const body = await readJsonBody(req);
 
-  if (!body) {
-    return sendError(res, 400, "Request body required");
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleSmartParseApply');
+  validationLog.beforeValidation(body);
+
+  const parsed = SmartParseApplySchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
 
-  const { artifactId, fields } = body;
+  validationLog.afterValidation(parsed.data);
+  // ================================
 
-  if (!artifactId) {
-    return sendError(res, 400, "artifactId is required");
-  }
-
-  if (!fields || !Array.isArray(fields) || fields.length === 0) {
-    return sendError(res, 400, "fields array is required");
-  }
+  const { artifactId, fields } = parsed.data;
 
   const prisma = getPrisma();
-  const userId = resolveUserId(req);
+  const userId = authUser?.id ?? null;  // T1.3: Use validated JWT identity
 
   try {
     // Step 1: Get or create parse session for this deal

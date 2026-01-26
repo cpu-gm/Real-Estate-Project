@@ -13,6 +13,8 @@ import {
   getMockNewsForDeal,
   getMockFollowupAnswer
 } from "../mocks/news-insights.js";
+import { createValidationLogger } from "../services/validation-logger.js";
+import { NewsAskSchema } from "../middleware/route-schemas.js";
 
 const NEWS_CACHE_TTL_MS = Number(process.env.BFF_NEWS_TTL_MS ?? 300000); // 5 minutes
 const USE_MOCK_DATA = process.env.NEWS_USE_MOCK !== 'false';
@@ -116,19 +118,27 @@ export async function handleNewsAsk(req, res, readJsonBody, authUser) {
 
   const body = await readJsonBody(req);
 
-  if (!body) {
-    return sendError(res, 400, "Request body required");
+  // ========== VALIDATION ==========
+  const validationLog = createValidationLogger('handleNewsAsk');
+  validationLog.beforeValidation(body);
+
+  const parsed = NewsAskSchema.safeParse(body);
+  if (!parsed.success) {
+    validationLog.validationFailed(parsed.error.errors);
+    return sendJson(res, 400, {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid request body',
+      errors: parsed.error.errors.map(e => ({
+        field: e.path.join('.'),
+        message: e.message
+      }))
+    });
   }
 
-  const { insightId, question } = body;
+  validationLog.afterValidation(parsed.data);
+  // ================================
 
-  if (!insightId) {
-    return sendError(res, 400, "insightId is required");
-  }
-
-  if (!question || typeof question !== 'string' || question.trim().length === 0) {
-    return sendError(res, 400, "question is required");
-  }
+  const { insightId, question } = parsed.data;
 
   // SECURITY: Use validated authUser instead of spoofable headers
   const userId = authUser.id;
@@ -195,9 +205,11 @@ export async function handleNewsAsk(req, res, readJsonBody, authUser) {
  * Dismiss a news insight (hide from feed)
  *
  * POST /api/news-insights/:insightId/dismiss
+ *
+ * T1.3 (P1 Security Sprint): Uses authUser from validated JWT
  */
-export async function handleNewsDismiss(req, res, insightId, resolveUserId) {
-  const userId = resolveUserId(req);
+export async function handleNewsDismiss(req, res, insightId, authUser) {
+  const userId = authUser.id;  // T1.3: Use validated JWT identity
 
   try {
     const prisma = getPrisma();

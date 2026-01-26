@@ -28,7 +28,8 @@ import {
   Bot,
   ClipboardCheck,
   FileOutput,
-  Loader2
+  Loader2,
+  ListChecks
 } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +64,7 @@ import VerificationQueue from '@/components/verification/VerificationQueue';
 import DocumentGenerator from '@/components/documents/DocumentGenerator';
 import DealStateMachine from '@/components/dealState/DealStateMachine';
 import DealLifecycleHero from '@/components/dealState/DealLifecycleHero';
+import { DDOverviewCard } from '@/components/dd/DDOverviewCard';
 
 const lifecycleColors = {
   'Draft': 'bg-slate-100 text-slate-700 border-slate-200',
@@ -138,6 +140,7 @@ export default function DealOverviewPage() {
   const [showStateMachine, setShowStateMachine] = useState(false);
   const [showVerificationQueue, setShowVerificationQueue] = useState(false);
   const [showDocGenerator, setShowDocGenerator] = useState(false);
+  const [showDueDiligence, setShowDueDiligence] = useState(false);
 
   const { data: home, isLoading } = useQuery({
     queryKey: ['deal-home', dealId],
@@ -859,6 +862,33 @@ export default function DealOverviewPage() {
             {showDocGenerator && (
               <div className="border-t border-[#E5E5E5] p-6">
                 <DocumentGenerator dealId={dealId} dealName={deal?.name} />
+              </div>
+            )}
+          </div>
+
+          {/* Due Diligence Section */}
+          <div className="bg-white rounded-xl border border-[#E5E5E5]">
+            <button
+              onClick={() => setShowDueDiligence(!showDueDiligence)}
+              className="w-full flex items-center justify-between p-6 hover:bg-[#FAFAFA] transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center">
+                  <ListChecks className="w-4 h-4 text-purple-600" />
+                </div>
+                <div className="text-left">
+                  <h3 className="text-sm font-semibold text-[#171717]">Due Diligence</h3>
+                  <p className="text-xs text-[#737373]">Track DD checklist items, documents, and approvals</p>
+                </div>
+              </div>
+              <ChevronRight className={cn(
+                "w-5 h-5 text-[#A3A3A3] transition-transform",
+                showDueDiligence && "rotate-90"
+              )} />
+            </button>
+            {showDueDiligence && (
+              <div className="border-t border-[#E5E5E5] p-6">
+                <DDOverviewCard dealId={dealId} />
               </div>
             )}
           </div>

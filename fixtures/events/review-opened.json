@@ -1,4 +1,9 @@
 {
+  "_meta": {
+    "source": "POST /kernel/deals/:dealId/events (emit)",
+    "schema": "kernelEventSchema",
+    "createdAt": "2026-01-21"
+  },
   "_comment": "Kernel event: Deal submitted for review - transitions from Draft to UnderReview",
   "type": "ReviewOpened",
   "_type_comment": "Event types defined in cre-kernel-phase1/packages/shared/src/index.ts",

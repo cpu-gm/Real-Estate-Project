@@ -1,0 +1,288 @@
+{
+  "name": "LP Invitation Funnel (Simple)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lp-invitation",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: LP Invitation Sent",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "lp-invitation-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-event-type",
+              "leftValue": "={{ $json.body.eventType }}",
+              "rightValue": "LP_INVITATION_SENT",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-event",
+      "name": "Filter: Is LP Invitation?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ received: true, invitationId: $json.body.detail.invitationId }) }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond: Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "var-invitation-id",
+              "name": "invitationId",
+              "value": "={{ $json.body.detail.invitationId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-deal-id",
+              "name": "dealId",
+              "value": "={{ $json.body.detail.dealId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-deal-name",
+              "name": "dealName",
+              "value": "={{ $json.body.detail.dealName }}",
+              "type": "string"
+            },
+            {
+              "id": "var-lp-email",
+              "name": "lpEmail",
+              "value": "={{ $json.body.detail.lpEmail }}",
+              "type": "string"
+            },
+            {
+              "id": "var-lp-name",
+              "name": "lpEntityName",
+              "value": "={{ $json.body.detail.lpEntityName }}",
+              "type": "string"
+            },
+            {
+              "id": "var-gp-user",
+              "name": "gpUserId",
+              "value": "={{ $json.body.detail.createdBy }}",
+              "type": "string"
+            },
+            {
+              "id": "var-email-type",
+              "name": "emailType",
+              "value": "INVITATION",
+              "type": "string"
+            },
+            {
+              "id": "var-bff-url",
+              "name": "bffBaseUrl",
+              "value": "https://wendy-nontoned-donetta.ngrok-free.dev",
+              "type": "string"
+            },
+            {
+              "id": "var-callback-secret",
+              "name": "callbackSecret",
+              "value": "s6MBbexkq8lfnqgYcu0IBPKy24Wbfe9bR7Z/UluVjpg=",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-variables",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Set Variables').item.json.bffBaseUrl }}/api/n8n/generate-email",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Secret",
+              "value": "={{ $('Set Variables').item.json.callbackSecret }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "X-N8n-Workflow-Name",
+              "value": "LP_INVITATION_FUNNEL"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ invitationId: $('Set Variables').item.json.invitationId, emailType: $('Set Variables').item.json.emailType, dealContext: { dealName: $('Set Variables').item.json.dealName, dealId: $('Set Variables').item.json.dealId } }) }}",
+        "options": {}
+      },
+      "id": "generate-email",
+      "name": "HTTP: Generate AI Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Set Variables').item.json.bffBaseUrl }}/api/n8n/create-gp-approval-task",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Secret",
+              "value": "={{ $('Set Variables').item.json.callbackSecret }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ draftId: $('HTTP: Generate AI Email').item.json.draftId, gpUserId: $('Set Variables').item.json.gpUserId, dealId: $('Set Variables').item.json.dealId, invitationId: $('Set Variables').item.json.invitationId }) }}",
+        "options": {}
+      },
+      "id": "create-approval-task",
+      "name": "HTTP: Create GP Approval Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {},
+      "id": "end-waiting",
+      "name": "End: Waiting for GP Approval",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1570, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: LP Invitation Sent": {
+      "main": [
+        [
+          {
+            "node": "Filter: Is LP Invitation?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Is LP Invitation?": {
+      "main": [
+        [
+          {
+            "node": "Respond: Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond: Acknowledge": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Generate AI Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Generate AI Email": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Create GP Approval Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Create GP Approval Task": {
+      "main": [
+        [
+          {
+            "node": "End: Waiting for GP Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "LP Onboarding"
+    },
+    {
+      "name": "Email Automation"
+    }
+  ],
+  "pinData": {},
+  "versionId": "3"
+}

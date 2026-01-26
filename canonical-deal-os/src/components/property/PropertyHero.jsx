@@ -42,15 +42,30 @@ export default function PropertyHero({
   const getStatusBadge = () => {
     switch (status) {
       case 'DRAFT_INGESTED':
-        return <Badge variant="outline" className="bg-slate-100 text-slate-700">Portfolio</Badge>;
-      case 'ACTIVE':
+        return <Badge variant="outline" className="bg-slate-100 text-slate-700">Draft</Badge>;
+      case 'OM_DRAFTED':
+        return <Badge className="bg-blue-100 text-blue-700">OM Drafted</Badge>;
+      case 'OM_BROKER_APPROVED':
+        return <Badge className="bg-amber-100 text-amber-700">Broker Approved</Badge>;
+      case 'OM_APPROVED_FOR_MARKETING':
+        return <Badge className="bg-green-100 text-green-700">Ready to Distribute</Badge>;
+      case 'DISTRIBUTED':
+        return <Badge className="bg-purple-100 text-purple-700">Distributed</Badge>;
+      case 'ACTIVE_DD':
+        return <Badge className="bg-emerald-100 text-emerald-700">Active DD</Badge>;
+      case 'LISTED_PENDING_BROKER':
+        return <Badge className="bg-amber-100 text-amber-700">Awaiting Broker</Badge>;
+      case 'LISTED_ACTIVE':
         return <Badge className="bg-green-100 text-green-700">Listed</Badge>;
+      case 'LISTED_UNDER_CONTRACT':
       case 'UNDER_CONTRACT':
         return <Badge className="bg-blue-100 text-blue-700">Under Contract</Badge>;
+      case 'LISTING_CANCELLED':
+        return <Badge className="bg-slate-100 text-slate-500">Cancelled</Badge>;
       case 'CLOSED':
         return <Badge className="bg-purple-100 text-purple-700">Closed</Badge>;
       default:
-        return <Badge variant="outline">{status}</Badge>;
+        return <Badge variant="outline" className="bg-white/90 text-slate-700">{status?.replace(/_/g, ' ') || 'Unknown'}</Badge>;
     }
   };
 

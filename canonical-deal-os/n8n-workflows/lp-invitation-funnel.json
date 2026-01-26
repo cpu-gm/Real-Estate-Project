@@ -1,0 +1,628 @@
+{
+  "name": "LP Invitation Funnel",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lp-invitation",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: LP Invitation Sent",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "lp-invitation-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-event-type",
+              "leftValue": "={{ $json.body.eventType }}",
+              "rightValue": "LP_INVITATION_SENT",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-event",
+      "name": "Filter: Is LP Invitation?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ received: true, invitationId: $json.body.detail.invitationId }) }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond: Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/generate-email",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $('Code: Generate HMAC').item.json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "X-N8n-Workflow-Name",
+              "value": "LP_INVITATION_FUNNEL"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ invitationId: $('Set Variables').item.json.invitationId, emailType: $('Set Variables').item.json.emailType, dealContext: { dealName: $('Set Variables').item.json.dealName, dealId: $('Set Variables').item.json.dealId } }) }}",
+        "options": {}
+      },
+      "id": "generate-email",
+      "name": "HTTP: Generate AI Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/create-gp-approval-task",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $('Code: HMAC for Approval Task').item.json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ draftId: $('HTTP: Generate AI Email').item.json.draftId, gpUserId: $('Set Variables').item.json.gpUserId, dealId: $('Set Variables').item.json.dealId, invitationId: $('Set Variables').item.json.invitationId }) }}",
+        "options": {}
+      },
+      "id": "create-approval-task",
+      "name": "HTTP: Create GP Approval Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "email-approved",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "wait-approval",
+      "name": "Webhook: Wait for Approval",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [1570, 300],
+      "webhookId": "email-approval-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "approved-check",
+              "leftValue": "={{ $json.body.eventType }}",
+              "rightValue": "EMAIL_DRAFT_APPROVED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-approved",
+      "name": "IF: Email Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/send-email",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $('Code: HMAC for Send').item.json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ draftId: $json.body.detail.draftId }) }}",
+        "options": {}
+      },
+      "id": "send-email",
+      "name": "HTTP: Send Approved Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2010, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/update-reminder-state",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $('Code: HMAC for State Update').item.json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ invitationId: $('Set Variables').item.json.invitationId, currentStep: 'INITIAL', nextReminderAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), remindersSent: 1 }) }}",
+        "options": {}
+      },
+      "id": "update-state-initial",
+      "name": "HTTP: Update State (Initial)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2230, 200]
+    },
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "days"
+      },
+      "id": "wait-3-days",
+      "name": "Wait: 3 Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2450, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/invitations/{{ $('Set Variables').item.json.invitationId }}/status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $('Code: HMAC for Status Check').item.json.signature }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "check-status-day3",
+      "name": "HTTP: Check If Accepted (Day 3)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2670, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "accepted-check-day3",
+              "leftValue": "={{ $json.accepted }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-accepted-day3",
+      "name": "IF: Accepted? (Day 3)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2890, 200]
+    },
+    {
+      "parameters": {},
+      "id": "end-success",
+      "name": "End: Success",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3110, 100]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "var-invitation-id",
+              "name": "invitationId",
+              "value": "={{ $json.body.detail.invitationId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-deal-id",
+              "name": "dealId",
+              "value": "={{ $json.body.detail.dealId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-deal-name",
+              "name": "dealName",
+              "value": "={{ $json.body.detail.dealName }}",
+              "type": "string"
+            },
+            {
+              "id": "var-lp-email",
+              "name": "lpEmail",
+              "value": "={{ $json.body.detail.lpEmail }}",
+              "type": "string"
+            },
+            {
+              "id": "var-lp-name",
+              "name": "lpEntityName",
+              "value": "={{ $json.body.detail.lpEntityName }}",
+              "type": "string"
+            },
+            {
+              "id": "var-gp-user",
+              "name": "gpUserId",
+              "value": "={{ $json.body.detail.createdBy }}",
+              "type": "string"
+            },
+            {
+              "id": "var-email-type",
+              "name": "emailType",
+              "value": "INVITATION",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-variables",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst payload = {\n  invitationId: $('Set Variables').item.json.invitationId,\n  emailType: $('Set Variables').item.json.emailType,\n  dealContext: {\n    dealName: $('Set Variables').item.json.dealName,\n    dealId: $('Set Variables').item.json.dealId\n  }\n};\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { signature };"
+      },
+      "id": "hmac-generate-email",
+      "name": "Code: Generate HMAC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst payload = {\n  draftId: $('HTTP: Generate AI Email').item.json.draftId,\n  gpUserId: $('Set Variables').item.json.gpUserId,\n  dealId: $('Set Variables').item.json.dealId,\n  invitationId: $('Set Variables').item.json.invitationId\n};\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { signature };"
+      },
+      "id": "hmac-approval-task",
+      "name": "Code: HMAC for Approval Task",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst payload = { draftId: $json.body.detail.draftId };\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { signature };"
+      },
+      "id": "hmac-send-email",
+      "name": "Code: HMAC for Send",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2010, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst invitationId = $('Set Variables').item.json.invitationId;\nconst signature = crypto.createHmac('sha256', secret).update(invitationId).digest('hex');\nreturn { signature };"
+      },
+      "id": "hmac-status-check",
+      "name": "Code: HMAC for Status Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2670, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst payload = {\n  invitationId: $('Set Variables').item.json.invitationId,\n  currentStep: 'INITIAL',\n  nextReminderAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),\n  remindersSent: 1\n};\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { signature };"
+      },
+      "id": "hmac-state-update",
+      "name": "Code: HMAC for State Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 400]
+    }
+  ],
+  "connections": {
+    "Webhook: LP Invitation Sent": {
+      "main": [
+        [
+          {
+            "node": "Filter: Is LP Invitation?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Is LP Invitation?": {
+      "main": [
+        [
+          {
+            "node": "Respond: Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond: Acknowledge": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Code: Generate HMAC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Generate HMAC": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Generate AI Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Generate AI Email": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for Approval Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for Approval Task": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Create GP Approval Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Create GP Approval Task": {
+      "main": [
+        [
+          {
+            "node": "Webhook: Wait for Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Wait for Approval": {
+      "main": [
+        [
+          {
+            "node": "IF: Email Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Email Approved?": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for Send",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Code: HMAC for Send": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Send Approved Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Send Approved Email": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for State Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for State Update": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Update State (Initial)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Update State (Initial)": {
+      "main": [
+        [
+          {
+            "node": "Wait: 3 Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait: 3 Days": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for Status Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for Status Check": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Check If Accepted (Day 3)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Check If Accepted (Day 3)": {
+      "main": [
+        [
+          {
+            "node": "IF: Accepted? (Day 3)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Accepted? (Day 3)": {
+      "main": [
+        [
+          {
+            "node": "End: Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "LP Onboarding"
+    },
+    {
+      "name": "Email Automation"
+    }
+  ],
+  "pinData": {},
+  "versionId": "1"
+}

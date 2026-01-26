@@ -229,21 +229,69 @@ See `canonical-deal-os/SECURITY_GUIDELINES.md` for full patterns and examples.
 
 ---
 
+## Automatic Error Debugging
+
+When you encounter an API error, just say **"debug"** and Claude will automatically diagnose it.
+
+### How It Works
+
+1. **User**: Sees error or says "debug", "fix the error", "what went wrong"
+2. **Claude**: Reads `.claude/api-errors-detailed.json` with full context
+3. **Claude**: Identifies the issue, shows relevant code, provides fix
+
+### Error Log Files
+
+| File | Purpose |
+|------|---------|
+| `.claude/api-errors-detailed.json` | **Rich context** - source code, git info, suggested fix |
+| `.claude/api-errors.log` | Simple JSONL log of recent errors |
+| `.claude/commands/debug.md` | Instructions for Claude on debugging |
+
+### What Claude Gets Automatically
+
+- **Error details**: code, message, suggestion, stack trace
+- **Source context**: which file/function, code lines around error
+- **Request context**: user role, org, request body (sanitized)
+- **Git context**: recent commits, uncommitted changes to route file
+- **Suggested fix**: step-by-step instructions and code example
+
+### Error Code Reference
+
+| Code | Meaning |
+|------|---------|
+| `AUTH_REQUIRED` | No/invalid authentication token |
+| `FORBIDDEN_ROLE` | User lacks required role (GP, Admin) |
+| `FORBIDDEN_ORG` | Cross-organization access violation |
+| `VALIDATION_FAILED` | Request body missing/invalid fields |
+| `NOT_FOUND` | Resource doesn't exist |
+| `INTERNAL_ERROR` | Uncaught exception (check stack) |
+
+### Debug Endpoints (manual)
+- `GET /api/debug/errors` - Last 50 errors in memory
+- `GET /api/debug/status` - Request stats and error counts
+
+---
+
 ## Current Project State
-<!-- Auto-updated by PreCompact: 2026-01-21 10:33:14 AM -->
+<!-- Auto-updated by SessionEnd: 2026-01-26 9:36:16 AM -->
 
 ### Session Info
-- Last compaction/session end: 2026-01-21 10:33:14 AM
-- Hook trigger: PreCompact
+- Branch: `sprint1-prod-readiness`
+- Last update: 2026-01-26 9:36:16 AM
+- Hook trigger: SessionEnd
 
-### Active Work
-- [Review and update manually after resuming]
+### Git Status
+- Modified: 110 files
+- Staged: 1 files
+- Untracked: 219 files
 
-### Known Issues
-- [Update as needed]
+### Recent Commits
+- ab66ef7 Add listing workflow with broker invitation and management UI
+- f81e24c Add monorepo structure, contract system, and CI guardrails
+- 7bdda43 monorepo
 
-### Recent Changes
-- Session ended/compacted on 2026-01-21
+### Technical Debt
+- TODOs in codebase: 44
 
 ### Next Steps
 - [Continue from where you left off]

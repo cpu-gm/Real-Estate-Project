@@ -38,8 +38,8 @@ async function main() {
 
   // Create admin user
   const adminEmail = 'admin@canonical.com';
-  let adminUser = await prisma.authUser.findUnique({
-    where: { email: adminEmail }
+  let adminUser = await prisma.authUser.findFirst({
+    where: { email: adminEmail, organizationId: organization.id }
   });
 
   if (!adminUser) {
@@ -64,8 +64,8 @@ async function main() {
 
   // Create a GP user for testing
   const gpEmail = 'gp@canonical.com';
-  let gpUser = await prisma.authUser.findUnique({
-    where: { email: gpEmail }
+  let gpUser = await prisma.authUser.findFirst({
+    where: { email: gpEmail, organizationId: organization.id }
   });
 
   if (!gpUser) {
@@ -90,8 +90,8 @@ async function main() {
 
   // Create an analyst user for testing (pending verification)
   const analystEmail = 'analyst@canonical.com';
-  let analystUser = await prisma.authUser.findUnique({
-    where: { email: analystEmail }
+  let analystUser = await prisma.authUser.findFirst({
+    where: { email: analystEmail, organizationId: organization.id }
   });
 
   if (!analystUser) {

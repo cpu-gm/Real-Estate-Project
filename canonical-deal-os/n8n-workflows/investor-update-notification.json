@@ -1,0 +1,505 @@
+{
+  "name": "Investor Update Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "investor-update-published",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Investor Update Published",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "investor-update-published-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-event-type",
+              "leftValue": "={{ $json.body.eventType }}",
+              "rightValue": "INVESTOR_UPDATE_PUBLISHED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-event",
+      "name": "Filter: Is Update Published?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ received: true, updateId: $json.body.detail.updateId }) }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond: Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "var-update-id",
+              "name": "updateId",
+              "value": "={{ $json.body.detail.updateId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-deal-id",
+              "name": "dealId",
+              "value": "={{ $json.body.detail.dealId }}",
+              "type": "string"
+            },
+            {
+              "id": "var-title",
+              "name": "title",
+              "value": "={{ $json.body.detail.title }}",
+              "type": "string"
+            },
+            {
+              "id": "var-headline",
+              "name": "headline",
+              "value": "={{ $json.body.detail.headline }}",
+              "type": "string"
+            },
+            {
+              "id": "var-period",
+              "name": "period",
+              "value": "={{ $json.body.detail.period }}",
+              "type": "string"
+            },
+            {
+              "id": "var-update-type",
+              "name": "updateType",
+              "value": "={{ $json.body.detail.updateType }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-variables",
+      "name": "Set Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst dealId = $('Set Variables').item.json.dealId;\nconst signature = crypto.createHmac('sha256', secret).update(dealId).digest('hex');\nreturn { signature };"
+      },
+      "id": "hmac-fetch-lps",
+      "name": "Code: HMAC for LP Fetch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/deals/{{ $('Set Variables').item.json.dealId }}/lp-actors",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $('Code: HMAC for LP Fetch').item.json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-lp-actors",
+      "name": "HTTP: Fetch LP Actors",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-lps",
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-lps",
+      "name": "IF: Has LPs?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {},
+      "id": "end-no-lps",
+      "name": "End: No LPs",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1790, 450]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "lpActors",
+        "options": {}
+      },
+      "id": "split-lps",
+      "name": "Split: Each LP",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [1790, 250]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "lp-email",
+              "name": "lpEmail",
+              "value": "={{ $json.email }}",
+              "type": "string"
+            },
+            {
+              "id": "lp-name",
+              "name": "lpEntityName",
+              "value": "={{ $json.entityName }}",
+              "type": "string"
+            },
+            {
+              "id": "deal-name",
+              "name": "dealName",
+              "value": "={{ $('HTTP: Fetch LP Actors').item.json.dealName }}",
+              "type": "string"
+            },
+            {
+              "id": "title",
+              "name": "title",
+              "value": "={{ $('Set Variables').item.json.title }}",
+              "type": "string"
+            },
+            {
+              "id": "headline",
+              "name": "headline",
+              "value": "={{ $('Set Variables').item.json.headline }}",
+              "type": "string"
+            },
+            {
+              "id": "period",
+              "name": "period",
+              "value": "={{ $('Set Variables').item.json.period }}",
+              "type": "string"
+            },
+            {
+              "id": "update-type",
+              "name": "updateType",
+              "value": "={{ $('Set Variables').item.json.updateType }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-lp-context",
+      "name": "Set LP Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2010, 250]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {
+          "temperature": 0.7
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a professional real estate investment communications specialist. Generate professional, informative investor update notification emails for LP (Limited Partner) investors. Return JSON with: { \"subject\": \"string\", \"bodyHtml\": \"string\", \"bodyText\": \"string\" }. The bodyHtml should be simple HTML suitable for email. The bodyText should be plain text version.",
+              "role": "system"
+            },
+            {
+              "content": "Generate an investor update notification email for an LP investor.\n\nLP Name: {{ $json.lpEntityName }}\nDeal Name: {{ $json.dealName }}\nUpdate Title: {{ $json.title }}\nHeadline: {{ $json.headline || 'New investor update available' }}\nPeriod: {{ $json.period || 'Current Period' }}\nUpdate Type: {{ $json.updateType || 'QUARTERLY_REPORT' }}\n\nThe email should:\n1. Let them know a new investor update is available\n2. Include the headline/summary if provided\n3. Encourage them to log into the portal to view the full update\n4. Be brief and professional (1-2 paragraphs)"
+            }
+          ]
+        }
+      },
+      "id": "generate-email-ai",
+      "name": "OpenAI: Generate Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [2230, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json.message.content;\ntry {\n  return JSON.parse(response);\n} catch (e) {\n  // Fallback if AI doesn't return valid JSON\n  const ctx = $('Set LP Context').item.json;\n  return {\n    subject: `Investor Update: ${ctx.title} - ${ctx.dealName}`,\n    bodyHtml: `<p>Dear ${ctx.lpEntityName},</p><p>A new investor update is available for <strong>${ctx.dealName}</strong>: <em>${ctx.title}</em></p><p>${ctx.headline || 'Please log into your investor portal to view the full update.'}</p><p>Thank you for your continued investment.</p>`,\n    bodyText: `Dear ${ctx.lpEntityName},\\n\\nA new investor update is available for ${ctx.dealName}: ${ctx.title}\\n\\n${ctx.headline || 'Please log into your investor portal to view the full update.'}\\n\\nThank you for your continued investment.`\n  };\n}"
+      },
+      "id": "parse-email-response",
+      "name": "Code: Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BFF_N8N_CALLBACK_SECRET;\nconst payload = {\n  to: $('Set LP Context').item.json.lpEmail,\n  subject: $json.subject,\n  html: $json.bodyHtml,\n  text: $json.bodyText,\n  metadata: {\n    event: 'INVESTOR_UPDATE_NOTIFICATION',\n    updateId: $('Set Variables').item.json.updateId,\n    lpEmail: $('Set LP Context').item.json.lpEmail\n  }\n};\nconst signature = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');\nreturn { ...payload, signature };"
+      },
+      "id": "hmac-send-email",
+      "name": "Code: Prepare Email + HMAC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2670, 250]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BFF_BASE_URL }}/api/n8n/send-direct-email",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8n-Signature",
+              "value": "={{ 'sha256=' + $json.signature }}"
+            },
+            {
+              "name": "X-N8n-Execution-Id",
+              "value": "={{ $execution.id }}"
+            },
+            {
+              "name": "X-N8n-Workflow-Name",
+              "value": "INVESTOR_UPDATE_NOTIFICATION"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.to, subject: $json.subject, html: $json.html, text: $json.text, metadata: $json.metadata }) }}",
+        "options": {}
+      },
+      "id": "send-email",
+      "name": "HTTP: Send Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2890, 250]
+    },
+    {
+      "parameters": {},
+      "id": "end-success",
+      "name": "End: Emails Sent",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3110, 250]
+    }
+  ],
+  "connections": {
+    "Webhook: Investor Update Published": {
+      "main": [
+        [
+          {
+            "node": "Filter: Is Update Published?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Is Update Published?": {
+      "main": [
+        [
+          {
+            "node": "Respond: Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond: Acknowledge": {
+      "main": [
+        [
+          {
+            "node": "Set Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Variables": {
+      "main": [
+        [
+          {
+            "node": "Code: HMAC for LP Fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: HMAC for LP Fetch": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Fetch LP Actors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Fetch LP Actors": {
+      "main": [
+        [
+          {
+            "node": "IF: Has LPs?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Has LPs?": {
+      "main": [
+        [
+          {
+            "node": "Split: Each LP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "End: No LPs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split: Each LP": {
+      "main": [
+        [
+          {
+            "node": "Set LP Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set LP Context": {
+      "main": [
+        [
+          {
+            "node": "OpenAI: Generate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI: Generate Email": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Code: Prepare Email + HMAC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Prepare Email + HMAC": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Send Email": {
+      "main": [
+        [
+          {
+            "node": "End: Emails Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "Investor Updates"
+    },
+    {
+      "name": "LP Notifications"
+    }
+  ],
+  "pinData": {},
+  "versionId": "1"
+}

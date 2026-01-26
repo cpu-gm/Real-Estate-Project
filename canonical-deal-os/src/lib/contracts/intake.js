@@ -6,7 +6,9 @@ export const DealDraftStatus = z.enum([
   "OM_BROKER_APPROVED",
   "OM_APPROVED_FOR_MARKETING",
   "DISTRIBUTED",
-  "ACTIVE_DD"
+  "ACTIVE_DD",
+  "LISTED_PENDING_BROKER",
+  "LISTED_ACTIVE"
 ]);
 
 export const ClaimVerifyAction = z.enum(["confirm", "reject"]);
@@ -276,11 +278,39 @@ export const IntakeClaimVerificationResponse = z
   })
   .passthrough();
 
+// Verified field with rich metadata
+const VerifiedField = z.object({
+  field: z.string(),
+  value: z.unknown(),
+  displayValue: z.string().nullable().optional(),
+  status: z.string(),
+  verifiedBy: z.string().nullable().optional(),
+  verifiedAt: z.string().nullable().optional()
+}).passthrough();
+
+// Unverified claim within a field
+const UnverifiedClaim = z.object({
+  id: z.string(),
+  value: z.unknown(),
+  displayValue: z.string().nullable().optional(),
+  confidence: z.number().nullable().optional(),
+  source: z.object({
+    documentName: z.string().nullable().optional(),
+    location: z.string().nullable().optional()
+  }).optional()
+}).passthrough();
+
+// Field needing verification (groups unverified claims by field)
+const FieldNeedingVerification = z.object({
+  field: z.string(),
+  claims: z.array(UnverifiedClaim).optional()
+}).passthrough();
+
 export const IntakeStatsResponse = z
   .object({
     stats: z.record(z.unknown()).nullable().optional(),
-    verifiedFields: z.array(z.string()).optional(),
-    fieldsNeedingVerification: z.array(z.string()).optional()
+    verifiedFields: z.array(VerifiedField).optional(),
+    fieldsNeedingVerification: z.array(FieldNeedingVerification).optional()
   })
   .passthrough();
 

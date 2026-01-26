@@ -16,11 +16,14 @@
     "ui:dev": "npm --prefix canonical-deal-os run dev",
     "start": "npm --prefix canonical-deal-os run start",
     "validate:contracts": "node scripts/validate-contracts.js",
+    "contracts:check": "node scripts/validate-contracts.js",
+    "contracts:fixtures": "node scripts/validate-contracts.js",
     "lint": "npm --prefix canonical-deal-os run lint",
     "lint:fix": "npm --prefix canonical-deal-os run lint:fix",
     "test": "npm run kernel:test && npm run bff:test",
     "clean:tmp": "git clean -fd tmpclaude-*-cwd",
-    "health": "npm --prefix canonical-deal-os run health"
+    "health": "npm --prefix canonical-deal-os run health",
+    "scan:todos": "node scripts/scan-todos.cjs"
   },
   "repository": {
     "type": "git",
@@ -32,5 +35,9 @@
     "event-sourcing"
   ],
   "author": "",
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@types/node": "^25.0.10"
+  }
 }

@@ -1,4 +1,9 @@
 {
+  "_meta": {
+    "source": "POST /api/lp/invite",
+    "schema": "lpInvitationRequestSchema",
+    "createdAt": "2026-01-21"
+  },
   "_comment": "Request to invite an LP to the portal - triggers email via BFF",
   "lpEntityName": "Acme Capital Partners LP",
   "_lpEntityName_comment": "Legal entity name of the LP investor",
