@@ -1,7 +1,7 @@
 {
   "testSuite": "idempotency-regression",
-  "completed": "2026-01-26T14:27:09.426Z",
-  "totalDuration": "1ms",
+  "completed": "2026-01-26T14:44:58.632Z",
+  "totalDuration": "4ms",
   "entries": 2,
   "byLevel": {
     "DEBUG": 0,

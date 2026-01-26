@@ -355,6 +355,7 @@ model LPActor {
   shareClass      ShareClass? @relation(fields: [shareClassId], references: [id])
   transfersFrom   LPTransfer[]  @relation("TransferFrom")
   transfersTo     LPTransfer[]  @relation("TransferTo")
+  capitalCallAllocations CapitalCallAllocation[]
 
   @@unique([email, dealId, shareClassId])            // LP can hold multiple classes in same deal
   @@index([dealId])
@@ -1591,6 +1592,7 @@ model CapitalCallAllocation {
   version         Int       @default(1)                 // Optimistic concurrency control
 
   capitalCall     CapitalCall @relation(fields: [capitalCallId], references: [id], onDelete: Cascade)
+  lpActor         LPActor     @relation(fields: [lpActorId], references: [id], onDelete: Restrict)
 
   @@unique([capitalCallId, lpActorId])
   @@index([lpActorId])
@@ -2484,6 +2486,9 @@ model DealDraftBroker {
   email             String
   name              String
   firmName          String?
+
+  // Status
+  status            String    @default("ACCEPTED")      // PENDING, ACCEPTED, DECLINED
 
   // Role
   role              String    @default("PRIMARY")       // PRIMARY, CO_BROKER

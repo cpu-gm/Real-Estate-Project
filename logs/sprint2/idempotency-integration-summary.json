@@ -1,7 +1,7 @@
 {
   "testSuite": "idempotency-integration",
-  "completed": "2026-01-26T14:27:09.971Z",
-  "totalDuration": "1ms",
+  "completed": "2026-01-26T14:44:59.783Z",
+  "totalDuration": "5ms",
   "entries": 2,
   "byLevel": {
     "DEBUG": 0,

@@ -299,14 +299,22 @@ describe('Capital Calls Routes', () => {
       });
 
       // Mark all allocations as funded
-      await prisma.capitalCallAllocation.updateMany({
-        where: { capitalCallId: testCallId },
-        data: {
-          status: 'FUNDED',
-          fundedAmount: prisma.raw('amount'),
-          fundedAt: new Date()
-        }
+      // NOTE: updateMany cannot use computed values, setting to a fixed value instead
+      const allocations = await prisma.capitalCallAllocation.findMany({
+        where: { capitalCallId: testCallId }
       });
+      await Promise.all(
+        allocations.map(a =>
+          prisma.capitalCallAllocation.update({
+            where: { id: a.id },
+            data: {
+              status: 'FUNDED',
+              fundedAmount: a.amount,
+              fundedAt: new Date()
+            }
+          })
+        )
+      );
 
       // Check if all are funded
       const allocations = await prisma.capitalCallAllocation.findMany({
@@ -373,13 +381,10 @@ describe('Capital Calls Routes', () => {
       });
 
       // When querying with org filter, should find it
+      // NOTE: Simplified test - Deal relation not yet implemented in schema
       const foundCalls = await prisma.capitalCall.findMany({
         where: {
-          dealId: testDealId,
-          deal: {
-            // In real implementation, deals have organizationId
-            // For this test, we verify the query structure
-          }
+          dealId: testDealId
         }
       });
 

@@ -1,7 +1,7 @@
 {
   "testSuite": "observability-regression",
-  "completed": "2026-01-26T14:24:44.708Z",
-  "totalDuration": "369ms",
+  "completed": "2026-01-26T14:44:56.230Z",
+  "totalDuration": "366ms",
   "entries": 2,
   "byLevel": {
     "DEBUG": 0,
